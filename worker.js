@@ -320,11 +320,8 @@ async function handleChatCompletions(request, env, tokens, requestId) {
 }
 
 function getDriverFromModel(model) {
-  if (model.startsWith("claude")) return "claude";
-  if (model.startsWith("gemini")) return "gemini";
-  if (model.startsWith("grok")) return "xai";
-  if (model.startsWith("deepseek") || model.includes(":")) return "ai-chat";
-  return "openai-completion";
+  // Puter 的官方统一聊天驱动是 ai-chat (内部负责自动调度 openai / claude / gemini / xai / deepseek 等底层 provider)
+  return "ai-chat";
 }
 
 /**
