@@ -1,890 +1,990 @@
 // =================================================================================
-//  项目: puter-2api (Cloudflare Worker 单文件版)
-//  版本: 1.0.3-cfw-pro (代号: Chimera Synthesis - Puter Pro)
-//  作者: 首席AI执行官 (Principal AI Executive Officer)
-//  协议: 奇美拉协议 · 综合版 (Project Chimera: Synthesis Edition)
-//  日期: 2025-11-20
+//  项目: puter-2api (Cloudflare Worker 版)
+//  版本: 2.0.0-pro (Puter.js to OpenAI API Gateway)
+//  作者: dongsuo
+//  协议: Apache License 2.0
 //
-//  描述:
-//  本文件是一个完全自包含、可一键部署的 Cloudflare Worker。它将 Puter.com 的
-//  统一后端服务，无损地转换为一个高性能、兼容 OpenAI 标准的 API 套件，涵盖
-//  文本、图像和视频生成。Worker 内置了一个功能强大的"开发者驾驶舱"Web UI，
-//  用于实时监控、多模态测试和快速集成。
-//
+//  特性:
+//  1. 完整兼容 OpenAI /v1/chat/completions (同时支持流式 Stream 和非流式 JSON)
+//  2. 兼容 /v1/models 与 /v1/images/generations
+//  3. 支持通过请求头 (X-Puter-Auth-Token) 或环境变量 (PUTER_AUTH_TOKENS) 灵活鉴权
+//  4. 支持主密钥 (API_MASTER_KEY) 保护与多 Token 自动轮询与故障重试
+//  5. 内置现代化 Web 调试终端与主流客户端 (LobeChat / NextChat / Cursor 等) 配置指引
 // =================================================================================
 
-// --- [第一部分: 核心配置 (Configuration-as-Code)] ---
-// 架构核心：所有关键参数在此定义，后续逻辑必须从此对象读取。
 const CONFIG = {
-  // 项目元数据
   PROJECT_NAME: "puter-2api",
-  PROJECT_VERSION: "1.0.3-cfw-pro", // [升级] 版本号迭代
-
-  // 安全配置
-  API_MASTER_KEY: "1", // 您的主 API 密钥。留空或设为 "1" 以禁用认证。
-
-  // 上游服务配置
+  PROJECT_VERSION: "2.0.0-pro",
   UPSTREAM_URL: "https://api.puter.com/drivers/call",
-
-  // Puter.com 凭证池 (支持多账号轮询)
-  PUTER_AUTH_TOKENS: [
-    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0IjoiYXUiLCJ2IjoiMC4wLjAiLCJ1dSI6Ino4U1N4Z3k2VEJtbDZMTGVOUFVaZVE9PSIsImF1IjoiaWRnL2ZEMDdVTkdhSk5sNXpXUGZhUT09IiwicyI6Inc0UTJ3djM1ZHhwdkkyTlg3L3lWMlE9PSIsImlhdCI6MTc2MzQ5NDg5NX0.rSOf1PJ9ZL6Aup2Tn4mkAnVUHJCNN37tCUSlQZtBBM0",
-    // 在此添加更多 auth_token 实现轮询, 例如: "eyJhbGciOi..."
-  ],
-
-  // 模型列表
-  CHAT_MODELS: [
-    "gpt-4o-mini", "gpt-4o", "gemini-1.5-flash",
-    "gpt-5.1","gpt-5.1-chat-latest", "gpt-5-2025-08-07", "gpt-5",
-    "gpt-5-mini-2025-08-07", "gpt-5-mini", "gpt-5-nano-2025-08-07", "gpt-5-nano", "gpt-5-chat-latest",
-    "o1", "o3", "o3-mini", "o4-mini", "gpt-4.1",
-    "gpt-4.1-mini", "gpt-4.1-nano", "claude-haiku-4-5-20251001",
-    "claude-sonnet-4-5-20250929", "claude-opus-4-1-20250805", "claude-opus-4-1",
-    "claude-opus-4-20250514", "claude-sonnet-4-20250514",
-    "claude-3-7-sonnet-20250219", "claude-3-7-sonnet-latest",
-    "claude-3-haiku-20240307", "grok-beta", "grok-vision-beta", "grok-3", "grok-3-fast", "grok-3-mini",
-    "grok-3-mini-fast", "grok-2-vision", "grok-2", "gemini-2.0-flash"
-  ],
-  IMAGE_MODELS: ["gpt-image-1"],
-  VIDEO_MODELS: ["sora-2", "sora-2-pro"],
-
+  MODELS_LIST_URL: "https://api.puter.com/puterai/chat/models/",
   DEFAULT_CHAT_MODEL: "gpt-4o-mini",
   DEFAULT_IMAGE_MODEL: "gpt-image-1",
-  DEFAULT_VIDEO_MODEL: "sora-2",
+
+  // 常用真实可用模型列表
+  COMMON_CHAT_MODELS: [
+    "gpt-4o-mini",
+    "gpt-4o",
+    "gpt-4-turbo",
+    "o1-mini",
+    "o1-preview",
+    "o3-mini",
+    "claude-3-5-sonnet",
+    "claude-3-5-haiku",
+    "claude-3-haiku",
+    "gemini-2.0-flash",
+    "gemini-1.5-flash",
+    "gemini-1.5-pro",
+    "deepseek-chat",
+    "deepseek-reasoner",
+    "grok-2",
+    "grok-beta",
+    "meta-llama/llama-3.3-70b-instruct",
+    "qwen/qwen-2.5-72b-instruct"
+  ],
+  IMAGE_MODELS: ["gpt-image-1"]
 };
 
-// 凭证轮询状态
-let tokenIndex = 0;
+// 全局轮询指针
+let globalTokenIndex = 0;
 
-// --- [第二部分: Worker 入口与路由] ---
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
-    if (url.pathname === '/') {
-      return handleUI(request);
-    } else if (url.pathname.startsWith('/v1/')) {
-      return handleApi(request);
+
+    if (request.method === "OPTIONS") {
+      return handleCorsPreflight();
+    }
+
+    if (url.pathname === "/" || url.pathname === "/index.html") {
+      return handleUI(request, env);
+    } else if (url.pathname.startsWith("/v1/")) {
+      return handleApi(request, env, ctx);
     } else {
-      return createErrorResponse(`路径未找到: ${url.pathname}`, 404, 'not_found');
+      return createErrorResponse(`未找到路径: ${url.pathname}`, 404, "not_found");
     }
   }
 };
 
-// --- [第三部分: API 代理逻辑] ---
+// ==========================================
+// 核心 API 路由与鉴权处理
+// ==========================================
 
-/**
- * 处理所有 /v1/ 路径下的 API 请求
- * @param {Request} request - 传入的请求对象
- * @returns {Promise<Response>}
- */
-async function handleApi(request) {
-  if (request.method === 'OPTIONS') {
-    return handleCorsPreflight();
-  }
-
-  const authHeader = request.headers.get('Authorization');
-  if (CONFIG.API_MASTER_KEY && CONFIG.API_MASTER_KEY !== "1") {
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return createErrorResponse('需要 Bearer Token 认证。', 401, 'unauthorized');
-    }
-    const token = authHeader.substring(7);
-    if (token !== CONFIG.API_MASTER_KEY) {
-      return createErrorResponse('无效的 API Key。', 403, 'invalid_api_key');
-    }
-  }
-
+async function handleApi(request, env, ctx) {
   const url = new URL(request.url);
-  const requestId = `puter-${crypto.randomUUID()}`;
+  const requestId = `chatcmpl-${crypto.randomUUID()}`;
 
+  // 1. 获取运行时配置
+  const runtimeConfig = getRuntimeConfig(env);
+
+  // 2. 鉴权与获取 Puter Token
+  const authResult = resolveAuthAndPuterToken(request, runtimeConfig);
+  if (!authResult.success) {
+    return createErrorResponse(authResult.error, authResult.status, authResult.code);
+  }
+
+  // 3. 路由分发
   switch (url.pathname) {
-    case '/v1/models':
-      return handleModelsRequest();
-    case '/v1/chat/completions':
-      return handleChatCompletions(request, requestId);
-    case '/v1/images/generations':
-      return handleImageGenerations(request, requestId);
-    case '/v1/videos/generations':
-      return handleVideoGenerations(request, requestId);
+    case "/v1/models":
+      return handleModelsRequest(env);
+    case "/v1/chat/completions":
+      return handleChatCompletions(request, env, authResult.tokens, requestId);
+    case "/v1/images/generations":
+      return handleImageGenerations(request, env, authResult.tokens, requestId);
     default:
-      return createErrorResponse(`API 路径不支持: ${url.pathname}`, 404, 'not_found');
+      return createErrorResponse(`API 路径不支持: ${url.pathname}`, 404, "not_found");
   }
 }
 
 /**
- * 处理 /v1/models 请求，并应用缓存
- * @returns {Promise<Response>}
+ * 解析主密钥认证与 Puter Token 池
  */
-async function handleModelsRequest() {
-    const cache = caches.default;
-    const cacheKey = new Request(new URL('/v1/models', 'https://puter-2api.cache').toString());
-    let response = await cache.match(cacheKey);
+function resolveAuthAndPuterToken(request, config) {
+  const authHeader = request.headers.get("Authorization") || "";
+  const customPuterToken = request.headers.get("X-Puter-Auth-Token") || request.headers.get("X-Puter-Token");
 
-    if (!response) {
-        const allModels = [...CONFIG.CHAT_MODELS, ...CONFIG.IMAGE_MODELS, ...CONFIG.VIDEO_MODELS];
-        const modelsData = {
-            object: 'list',
-            data: allModels.map(modelId => ({
-                id: modelId,
-                object: 'model',
-                created: Math.floor(Date.now() / 1000),
-                owned_by: 'puter-2api',
-            })),
-        };
-        response = new Response(JSON.stringify(modelsData), {
-            headers: corsHeaders({ 'Content-Type': 'application/json; charset=utf-8' })
-        });
-        response.headers.set("Cache-Control", "s-maxage=3600"); // 缓存1小时
-        await cache.put(cacheKey, response.clone());
+  // 优先使用请求头显式传递的 Puter Token
+  if (customPuterToken) {
+    return { success: true, tokens: [customPuterToken.trim()] };
+  }
+
+  const bearerToken = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
+
+  // 如果配置了主密钥保护
+  if (config.API_MASTER_KEY && config.API_MASTER_KEY !== "1") {
+    if (!bearerToken) {
+      return {
+        success: false,
+        status: 401,
+        code: "unauthorized",
+        error: "缺少认证密钥。请在 Authorization 请求头中传入 Bearer <API_MASTER_KEY>，或传入 X-Puter-Auth-Token。"
+      };
     }
-    return response;
+
+    if (bearerToken !== config.API_MASTER_KEY) {
+      // 允许用户直接将 Puter JWT Token 作为 Bearer Token 传入
+      if (bearerToken.startsWith("eyJ")) {
+        return { success: true, tokens: [bearerToken] };
+      }
+      return {
+        success: false,
+        status: 403,
+        code: "invalid_api_key",
+        error: "无效的 API Key。"
+      };
+    }
+  } else {
+    // 未开启主密钥保护时，如果用户传了 Puter JWT，直接优先使用
+    if (bearerToken && bearerToken.startsWith("eyJ")) {
+      return { success: true, tokens: [bearerToken] };
+    }
+  }
+
+  // 使用服务端的 Puter 凭证池
+  if (!config.PUTER_AUTH_TOKENS || config.PUTER_AUTH_TOKENS.length === 0) {
+    return {
+      success: false,
+      status: 401,
+      code: "missing_puter_token",
+      error: "未配置有效的 Puter Auth Token。请在 Cloudflare Worker 环境变量中设置 PUTER_AUTH_TOKENS，或在请求头中传入 X-Puter-Auth-Token。前往 https://puter.com/dashboard 即可获取。"
+    };
+  }
+
+  return { success: true, tokens: config.PUTER_AUTH_TOKENS };
 }
 
-/**
- * 处理 /v1/chat/completions 请求
- * @param {Request} request
- * @param {string} requestId
- * @returns {Promise<Response>}
- */
-async function handleChatCompletions(request, requestId) {
+function getRuntimeConfig(env) {
+  let tokens = [];
+
+  if (env && env.PUTER_AUTH_TOKENS) {
+    try {
+      const parsed = JSON.parse(env.PUTER_AUTH_TOKENS);
+      if (Array.isArray(parsed)) tokens = parsed;
+    } catch (e) {
+      tokens = env.PUTER_AUTH_TOKENS.split(",").map(t => t.trim()).filter(Boolean);
+    }
+  }
+
+  if (env && env.PUTER_AUTH_TOKEN) {
+    tokens.push(env.PUTER_AUTH_TOKEN.trim());
+  }
+
+  const masterKey = (env && env.API_MASTER_KEY !== undefined) ? env.API_MASTER_KEY : "";
+
+  return {
+    ...CONFIG,
+    API_MASTER_KEY: masterKey,
+    PUTER_AUTH_TOKENS: tokens
+  };
+}
+
+function getNextToken(tokenList) {
+  if (!tokenList || tokenList.length === 0) return null;
+  const token = tokenList[globalTokenIndex % tokenList.length];
+  globalTokenIndex = (globalTokenIndex + 1) % tokenList.length;
+  return token;
+}
+
+// ==========================================
+// Chat Completions (支持流式与非流式)
+// ==========================================
+
+async function handleChatCompletions(request, env, tokens, requestId) {
+  let requestData;
   try {
-    const requestData = await request.json();
-    const upstreamPayload = createUpstreamPayload('chat', requestData);
-
-    const upstreamResponse = await fetch(CONFIG.UPSTREAM_URL, {
-      method: 'POST',
-      headers: createUpstreamHeaders(requestId),
-      body: JSON.stringify(upstreamPayload),
-    });
-
-    if (!upstreamResponse.ok) {
-      return await handleErrorResponse(upstreamResponse);
-    }
-
-    const transformStream = createUpstreamToOpenAIStream(requestId, requestData.model || CONFIG.DEFAULT_CHAT_MODEL);
-
-    if (upstreamResponse.body) {
-        const [pipedStream] = upstreamResponse.body.tee();
-        return new Response(pipedStream.pipeThrough(transformStream), {
-            headers: corsHeaders({
-                'Content-Type': 'text/event-stream; charset=utf-8',
-                'Cache-Control': 'no-cache',
-                'Connection': 'keep-alive',
-                'X-Worker-Trace-ID': requestId,
-            }),
-        });
-    } else {
-        return createErrorResponse('上游未返回有效响应体。', 502, 'bad_gateway');
-    }
-
+    requestData = await request.json();
   } catch (e) {
-    console.error('处理聊天请求时发生异常:', e);
-    return createErrorResponse(`处理请求时发生内部错误: ${e.message}`, 500, 'internal_server_error');
+    return createErrorResponse("请求体不是合法的 JSON 格式。", 400, "invalid_json");
   }
-}
 
-/**
- * 处理 /v1/images/generations 请求
- * @param {Request} request
- * @param {string} requestId
- * @returns {Promise<Response>}
- */
-async function handleImageGenerations(request, requestId) {
+  const isStream = requestData.stream === true;
+  const model = requestData.model || CONFIG.DEFAULT_CHAT_MODEL;
+  const maxRetries = Math.min(tokens.length, 3);
+
+  let lastError = null;
+  let lastStatus = 500;
+
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    const currentToken = getNextToken(tokens);
+    const driver = getDriverFromModel(model);
+
+    const upstreamPayload = {
+      interface: "puter-chat-completion",
+      driver: driver,
+      test_mode: false,
+      method: "complete",
+      args: {
+        messages: requestData.messages || [],
+        model: model,
+        stream: true // 上游始终以 stream 调用，以避免长响应超时
+      },
+      auth_token: currentToken
+    };
+
+    const upstreamHeaders = {
+      "Content-Type": "application/json",
+      "Accept": isStream ? "text/event-stream" : "*/*",
+      "Origin": "https://docs.puter.com",
+      "Referer": "https://docs.puter.com/",
+      "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36",
+      "X-Request-ID": requestId,
+      "Authorization": `Bearer ${currentToken}`
+    };
+
     try {
-        const requestData = await request.json();
-        const upstreamPayload = createUpstreamPayload('image', requestData);
+      const upstreamResponse = await fetch(CONFIG.UPSTREAM_URL, {
+        method: "POST",
+        headers: upstreamHeaders,
+        body: JSON.stringify(upstreamPayload)
+      });
 
-        const upstreamResponse = await fetch(CONFIG.UPSTREAM_URL, {
-            method: 'POST',
-            headers: createUpstreamHeaders(requestId),
-            body: JSON.stringify(upstreamPayload),
-        });
+      if (!upstreamResponse.ok) {
+        const errorText = await upstreamResponse.text();
+        lastStatus = upstreamResponse.status;
+        lastError = errorText;
 
-        if (!upstreamResponse.ok) {
-            return await handleErrorResponse(upstreamResponse);
+        // 如果是 401 凭证失效或 429 限流，尝试轮换下一个 token
+        if ((upstreamResponse.status === 401 || upstreamResponse.status === 429) && attempt < maxRetries - 1) {
+          console.warn(`Token 认证失败或被限流 (${upstreamResponse.status})，尝试使用备用 Token...`);
+          continue;
         }
 
-        const imageBytes = await upstreamResponse.arrayBuffer();
+        return parseAndReturnUpstreamError(errorText, upstreamResponse.status);
+      }
 
-        // [修复] 使用循环代替扩展运算符来处理二进制数据，防止堆栈溢出
-        const bytes = new Uint8Array(imageBytes);
-        let binary = '';
-        for (let i = 0; i < bytes.length; i++) {
-            binary += String.fromCharCode(bytes[i]);
-        }
-        const b64_json = btoa(binary);
+      if (!upstreamResponse.body) {
+        return createErrorResponse("上游服务未返回响应正文。", 502, "bad_gateway");
+      }
 
-        const responseData = {
-            created: Math.floor(Date.now() / 1000),
-            data: [{ b64_json: b64_json }]
-        };
-
-        return new Response(JSON.stringify(responseData), {
-            headers: corsHeaders({
-                'Content-Type': 'application/json; charset=utf-8',
-                'X-Worker-Trace-ID': requestId,
-            }),
+      // 分支 A: 客户端请求流式 (Stream)
+      if (isStream) {
+        const transformStream = createUpstreamToOpenAIStream(requestId, model);
+        return new Response(upstreamResponse.body.pipeThrough(transformStream), {
+          headers: corsHeaders({
+            "Content-Type": "text/event-stream; charset=utf-8",
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Request-ID": requestId
+          })
         });
+      }
 
-    } catch (e) {
-        console.error('处理图像生成请求时发生异常:', e);
-        return createErrorResponse(`处理请求时发生内部错误: ${e.message}`, 500, 'internal_server_error');
+      // 分支 B: 客户端请求非流式 (Non-stream JSON)
+      const accumulated = await accumulateStreamResponse(upstreamResponse.body);
+      const responseJson = {
+        id: requestId,
+        object: "chat.completion",
+        created: Math.floor(Date.now() / 1000),
+        model: model,
+        choices: [
+          {
+            index: 0,
+            message: {
+              role: "assistant",
+              content: accumulated.content,
+              ...(accumulated.reasoning ? { reasoning_content: accumulated.reasoning } : {})
+            },
+            finish_reason: "stop"
+          }
+        ],
+        usage: {
+          prompt_tokens: 0,
+          completion_tokens: Math.ceil(accumulated.content.length / 4),
+          total_tokens: Math.ceil(accumulated.content.length / 4)
+        }
+      };
+
+      return new Response(JSON.stringify(responseJson), {
+        headers: corsHeaders({
+          "Content-Type": "application/json; charset=utf-8",
+          "X-Request-ID": requestId
+        })
+      });
+
+    } catch (err) {
+      lastError = err.message;
+      if (attempt < maxRetries - 1) continue;
     }
-}
+  }
 
-/**
- * 处理 /v1/videos/generations 请求
- * @param {Request} request
- * @param {string} requestId
- * @returns {Promise<Response>}
- */
-async function handleVideoGenerations(request, requestId) {
-    // [修改] 根据用户要求，禁用视频生成功能，并返回明确的错误提示。
-    return createErrorResponse(
-        '此部署版本不支持视频生成功能。该功能可能需要 Puter.com 的高级账户才能使用。',
-        403, // 403 Forbidden 表示服务器理解请求但拒绝授权
-        'access_denied'
-    );
-
-    /*
-    // 原始代码已被禁用
-    try {
-        const requestData = await request.json();
-        const upstreamPayload = createUpstreamPayload('video', requestData);
-
-        const upstreamResponse = await fetch(CONFIG.UPSTREAM_URL, {
-            method: 'POST',
-            headers: createUpstreamHeaders(requestId),
-            body: JSON.stringify(upstreamPayload),
-        });
-
-        if (!upstreamResponse.ok) {
-            return await handleErrorResponse(upstreamResponse);
-        }
-
-        const result = await upstreamResponse.json();
-        const videoUrl = typeof result === 'string' ? result : (result.url || '');
-
-        if (!videoUrl) {
-            return createErrorResponse('上游未返回有效的视频 URL。', 502, 'bad_gateway');
-        }
-
-        const responseData = {
-            created: Math.floor(Date.now() / 1000),
-            data: [{ url: videoUrl }]
-        };
-
-        return new Response(JSON.stringify(responseData), {
-            headers: corsHeaders({
-                'Content-Type': 'application/json; charset=utf-8',
-                'X-Worker-Trace-ID': requestId,
-            }),
-        });
-
-    } catch (e) {
-        console.error('处理视频生成请求时发生异常:', e);
-        return createErrorResponse(`处理请求时发生内部错误: ${e.message}`, 500, 'internal_server_error');
-    }
-    */
-}
-
-// --- 辅助函数 ---
-
-function _get_auth_token() {
-    const token = CONFIG.PUTER_AUTH_TOKENS[tokenIndex];
-    tokenIndex = (tokenIndex + 1) % CONFIG.PUTER_AUTH_TOKENS.length;
-    return token;
+  return createErrorResponse(`上游服务调用失败: ${lastError}`, lastStatus, "upstream_error");
 }
 
 function getDriverFromModel(model) {
-    if (model.startsWith("gpt") || model.startsWith("o1") || model.startsWith("o3") || model.startsWith("o4")) return "openai-completion";
-    if (model.startsWith("claude")) return "claude";
-    if (model.startsWith("gemini")) return "gemini";
-    if (model.startsWith("grok")) return "xai";
-    return "openai-completion"; // 默认
+  if (model.startsWith("claude")) return "claude";
+  if (model.startsWith("gemini")) return "gemini";
+  if (model.startsWith("grok")) return "xai";
+  if (model.startsWith("deepseek") || model.includes(":")) return "ai-chat";
+  return "openai-completion";
 }
 
-function createUpstreamPayload(type, requestData) {
-    const authToken = _get_auth_token();
-    switch (type) {
-        case 'chat':
-            const model = requestData.model || CONFIG.DEFAULT_CHAT_MODEL;
-            return {
-                interface: "puter-chat-completion",
-                driver: getDriverFromModel(model),
-                test_mode: false,
-                method: "complete",
-                args: {
-                    messages: requestData.messages,
-                    model: model,
-                    stream: true
-                },
-                auth_token: authToken
-            };
-        case 'image':
-            return {
-                interface: "puter-image-generation",
-                driver: "openai-image-generation",
-                test_mode: false,
-                method: "generate",
-                args: {
-                    model: requestData.model || CONFIG.DEFAULT_IMAGE_MODEL,
-                    quality: requestData.quality || "high",
-                    prompt: requestData.prompt
-                },
-                auth_token: authToken
-            };
-        case 'video':
-            return {
-                interface: "puter-video-generation",
-                driver: "openai-video-generation",
-                test_mode: false,
-                method: "generate",
-                args: {
-                    model: requestData.model || CONFIG.DEFAULT_VIDEO_MODEL,
-                    seconds: requestData.seconds || 8,
-                    size: requestData.size || "1280x720",
-                    prompt: requestData.prompt
-                },
-                auth_token: authToken
-            };
-    }
-}
+/**
+ * 将 Puter 上游流累积并转换为完整文本 (用于非流式请求)
+ */
+async function accumulateStreamResponse(body) {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let fullContent = "";
+  let fullReasoning = "";
 
-function createUpstreamHeaders(requestId) {
-    return {
-        'Content-Type': 'application/json',
-        'Accept': '*/*',
-        'Origin': 'https://docs.puter.com',
-        'Referer': 'https://docs.puter.com/',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36',
-        'X-Request-ID': requestId,
-    };
-}
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
 
-async function handleErrorResponse(response) {
-    const errorBody = await response.text();
-    console.error(`上游服务错误: ${response.status}`, errorBody);
-    try {
-        const errorJson = JSON.parse(errorBody);
-        if (errorJson.error && errorJson.error.message) {
-             return createErrorResponse(`上游服务错误: ${errorJson.error.message}`, response.status, errorJson.error.code || 'upstream_error');
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop(); // 保持未结束行
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+
+      let payload = trimmed;
+      if (payload.startsWith("data: ")) payload = payload.slice(6).trim();
+      if (payload === "[DONE]") continue;
+
+      try {
+        const parsed = JSON.parse(payload);
+        if (parsed.type === "text" && typeof parsed.text === "string") {
+          fullContent += parsed.text;
+        } else if (parsed.text && typeof parsed.text === "string") {
+          fullContent += parsed.text;
+        } else if (parsed.type === "reasoning" && typeof parsed.reasoning === "string") {
+          fullReasoning += parsed.reasoning;
+        } else if (parsed.choices?.[0]?.delta?.content) {
+          fullContent += parsed.choices[0].delta.content;
         }
-    } catch(e) {}
-    return createErrorResponse(`上游服务返回错误 ${response.status}: ${errorBody}`, response.status, 'upstream_error');
+      } catch (e) {
+        // 忽略非 JSON 行
+      }
+    }
+  }
+
+  return { content: fullContent, reasoning: fullReasoning };
 }
 
+/**
+ * 流式转换器：Puter NDJSON/SSE -> OpenAI SSE 格式
+ */
 function createUpstreamToOpenAIStream(requestId, model) {
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
-  let buffer = '';
+  let buffer = "";
 
   return new TransformStream({
     transform(chunk, controller) {
       buffer += decoder.decode(chunk, { stream: true });
-      const lines = buffer.split('\n');
+      const lines = buffer.split("\n");
       buffer = lines.pop();
 
       for (const line of lines) {
-        if (line.trim()) {
-          try {
-            const data = JSON.parse(line);
-            if (data.type === 'text' && typeof data.text === 'string') {
-              const openAIChunk = {
-                id: requestId,
-                object: 'chat.completion.chunk',
-                created: Math.floor(Date.now() / 1000),
-                model: model,
-                choices: [{ index: 0, delta: { content: data.text }, finish_reason: null }],
-              };
-              controller.enqueue(encoder.encode(`data: ${JSON.stringify(openAIChunk)}\n\n`));
-            }
-          } catch (e) {
-            console.error('无法解析上游 NDJSON 数据块:', line, e);
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+
+        let payload = trimmed;
+        if (payload.startsWith("data: ")) payload = payload.slice(6).trim();
+        if (payload === "[DONE]") continue;
+
+        try {
+          const parsed = JSON.parse(payload);
+          let deltaText = "";
+
+          if (parsed.type === "text" && typeof parsed.text === "string") {
+            deltaText = parsed.text;
+          } else if (parsed.text && typeof parsed.text === "string") {
+            deltaText = parsed.text;
+          } else if (parsed.choices?.[0]?.delta?.content) {
+            deltaText = parsed.choices[0].delta.content;
           }
+
+          if (deltaText) {
+            const chunkObj = {
+              id: requestId,
+              object: "chat.completion.chunk",
+              created: Math.floor(Date.now() / 1000),
+              model: model,
+              choices: [
+                {
+                  index: 0,
+                  delta: { content: deltaText },
+                  finish_reason: null
+                }
+              ]
+            };
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunkObj)}\n\n`));
+          }
+        } catch (e) {
+          // 忽略格式解析错误
         }
       }
     },
     flush(controller) {
       const finalChunk = {
         id: requestId,
-        object: 'chat.completion.chunk',
+        object: "chat.completion.chunk",
         created: Math.floor(Date.now() / 1000),
         model: model,
-        choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+        choices: [
+          {
+            index: 0,
+            delta: {},
+            finish_reason: "stop"
+          }
+        ]
       };
       controller.enqueue(encoder.encode(`data: ${JSON.stringify(finalChunk)}\n\n`));
-      controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+      controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+    }
+  });
+}
+
+// ==========================================
+// Models List 接口
+// ==========================================
+
+async function handleModelsRequest(env) {
+  const cacheKey = new Request("https://puter-2api.internal/cache/v1/models");
+  const cache = caches.default;
+
+  try {
+    let cached = await cache.match(cacheKey);
+    if (cached) return cached;
+  } catch (e) {}
+
+  let models = [...CONFIG.COMMON_CHAT_MODELS, ...CONFIG.IMAGE_MODELS];
+
+  // 尝试从上游获取全量可用模型
+  try {
+    const upstreamRes = await fetch(CONFIG.MODELS_LIST_URL, {
+      headers: { "User-Agent": "Mozilla/5.0" }
+    });
+    if (upstreamRes.ok) {
+      const data = await upstreamRes.json();
+      if (Array.isArray(data.models)) {
+        // 合并去重
+        const set = new Set([...models, ...data.models]);
+        models = Array.from(set);
+      }
+    }
+  } catch (e) {
+    // 降级使用内置预设
+  }
+
+  const responseData = {
+    object: "list",
+    data: models.map(m => ({
+      id: m,
+      object: "model",
+      created: 1728518400,
+      owned_by: "puter"
+    }))
+  };
+
+  const response = new Response(JSON.stringify(responseData), {
+    headers: corsHeaders({
+      "Content-Type": "application/json; charset=utf-8",
+      "Cache-Control": "public, max-age=3600"
+    })
+  });
+
+  try {
+    await cache.put(cacheKey, response.clone());
+  } catch (e) {}
+
+  return response;
+}
+
+// ==========================================
+// Image Generations 接口
+// ==========================================
+
+async function handleImageGenerations(request, env, tokens, requestId) {
+  let requestData;
+  try {
+    requestData = await request.json();
+  } catch (e) {
+    return createErrorResponse("请求体不是合法的 JSON 格式。", 400, "invalid_json");
+  }
+
+  const currentToken = getNextToken(tokens);
+  const upstreamPayload = {
+    interface: "puter-image-generation",
+    driver: "openai-image-generation",
+    test_mode: false,
+    method: "generate",
+    args: {
+      model: requestData.model || CONFIG.DEFAULT_IMAGE_MODEL,
+      quality: requestData.quality || "high",
+      prompt: requestData.prompt || ""
     },
+    auth_token: currentToken
+  };
+
+  try {
+    const upstreamResponse = await fetch(CONFIG.UPSTREAM_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Origin": "https://docs.puter.com",
+        "Referer": "https://docs.puter.com/",
+        "User-Agent": "Mozilla/5.0",
+        "Authorization": `Bearer ${currentToken}`
+      },
+      body: JSON.stringify(upstreamPayload)
+    });
+
+    if (!upstreamResponse.ok) {
+      const errText = await upstreamResponse.text();
+      return parseAndReturnUpstreamError(errText, upstreamResponse.status);
+    }
+
+    const imageBytes = await upstreamResponse.arrayBuffer();
+    const bytes = new Uint8Array(imageBytes);
+    let binary = "";
+    for (let i = 0; i < bytes.length; i++) {
+      binary += String.fromCharCode(bytes[i]);
+    }
+    const b64Json = btoa(binary);
+
+    return new Response(JSON.stringify({
+      created: Math.floor(Date.now() / 1000),
+      data: [{ b64_json: b64Json }]
+    }), {
+      headers: corsHeaders({ "Content-Type": "application/json; charset=utf-8" })
+    });
+  } catch (err) {
+    return createErrorResponse(`图像生成失败: ${err.message}`, 500, "internal_error");
+  }
+}
+
+// ==========================================
+// 辅助与错误处理工具
+// ==========================================
+
+function parseAndReturnUpstreamError(errorBody, status) {
+  try {
+    const errorJson = JSON.parse(errorBody);
+    if (errorJson.message) {
+      return createErrorResponse(`上游错误: ${errorJson.message}`, status, errorJson.code || "upstream_error");
+    }
+    if (errorJson.error) {
+      const msg = typeof errorJson.error === "string" ? errorJson.error : errorJson.error.message;
+      return createErrorResponse(`上游错误: ${msg}`, status, errorJson.error.code || "upstream_error");
+    }
+  } catch (e) {}
+
+  return createErrorResponse(`上游服务返回错误 (${status}): ${errorBody}`, status, "upstream_error");
+}
+
+function createErrorResponse(message, status = 500, code = "api_error") {
+  return new Response(JSON.stringify({
+    error: {
+      message: message,
+      type: "api_error",
+      code: code
+    }
+  }), {
+    status: status,
+    headers: corsHeaders({ "Content-Type": "application/json; charset=utf-8" })
   });
 }
 
 function handleCorsPreflight() {
-  return new Response(null, { status: 204, headers: corsHeaders() });
-}
-
-function createErrorResponse(message, status, code) {
-  return new Response(JSON.stringify({ error: { message, type: 'api_error', code } }), {
-    status,
-    headers: corsHeaders({ 'Content-Type': 'application/json; charset=utf-8' })
+  return new Response(null, {
+    status: 204,
+    headers: corsHeaders()
   });
 }
 
-function corsHeaders(headers = {}) {
+function corsHeaders(extra = {}) {
   return {
-    ...headers,
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Puter-Auth-Token, X-Puter-Token",
+    ...extra
   };
 }
 
-// --- [第四部分: 开发者驾驶舱 UI] ---
-function handleUI(request) {
+// ==========================================
+// 开发者驾驶舱 UI (Web Dashboard)
+// ==========================================
+
+function handleUI(request, env) {
   const origin = new URL(request.url).origin;
-  const allModels = [...CONFIG.CHAT_MODELS, ...CONFIG.IMAGE_MODELS, ...CONFIG.VIDEO_MODELS];
+  const runtimeConfig = getRuntimeConfig(env);
+  const hasServerTokens = runtimeConfig.PUTER_AUTH_TOKENS.length > 0;
 
   const html = `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>${CONFIG.PROJECT_NAME} - 开发者驾驶舱</title>
+    <title>${CONFIG.PROJECT_NAME} v${CONFIG.PROJECT_VERSION} - 开发者控制台</title>
     <style>
-      :root { --bg-color: #121212; --sidebar-bg: #1E1E1E; --main-bg: #121212; --border-color: #333333; --text-color: #E0E0E0; --text-secondary: #888888; --primary-color: #FFBF00; --primary-hover: #FFD700; --input-bg: #2A2A2A; --error-color: #CF6679; --success-color: #66BB6A; --font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif; --font-mono: 'Fira Code', 'Consolas', 'Monaco', monospace; }
-      * { box-sizing: border-box; }
-      body { font-family: var(--font-family); margin: 0; background-color: var(--bg-color); color: var(--text-color); font-size: 14px; display: flex; height: 100vh; overflow: hidden; }
-      .skeleton { background-color: #2a2a2a; background-image: linear-gradient(90deg, #2a2a2a, #3a3a3a, #2a2a2a); background-size: 200% 100%; animation: skeleton-loading 1.5s infinite; border-radius: 4px; }
-      @keyframes skeleton-loading { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
-      select, textarea, input { background-color: var(--input-bg); border: 1px solid var(--border-color); border-radius: 4px; color: var(--text-color); padding: 10px; font-family: var(--font-family); font-size: 14px; width: 100%; }
-      select:focus, textarea:focus, input:focus { outline: none; border-color: var(--primary-color); }
+      :root {
+        --bg-color: #0f172a;
+        --sidebar-bg: #1e293b;
+        --card-bg: #1e293b;
+        --border-color: #334155;
+        --text-color: #f8fafc;
+        --text-secondary: #94a3b8;
+        --primary: #38bdf8;
+        --primary-hover: #0ea5e9;
+        --input-bg: #0f172a;
+        --success: #4ade80;
+        --danger: #f87171;
+        --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      }
+      * { box-sizing: border-box; margin: 0; padding: 0; }
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        background-color: var(--bg-color);
+        color: var(--text-color);
+        display: flex;
+        height: 100vh;
+        overflow: hidden;
+      }
+      .layout { display: flex; width: 100%; height: 100vh; }
+      .sidebar {
+        width: 420px;
+        flex-shrink: 0;
+        background-color: var(--sidebar-bg);
+        border-right: 1px solid var(--border-color);
+        padding: 24px;
+        display: flex;
+        flex-direction: column;
+        overflow-y: auto;
+        gap: 20px;
+      }
+      .main-content {
+        flex-grow: 1;
+        display: flex;
+        flex-direction: column;
+        padding: 24px;
+        overflow: hidden;
+      }
+      .header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding-bottom: 16px;
+        border-bottom: 1px solid var(--border-color);
+      }
+      .logo { font-size: 20px; font-weight: 700; color: var(--primary); }
+      .version { font-size: 12px; background: #334155; padding: 2px 8px; border-radius: 999px; margin-left: 8px; color: #cbd5e1; }
+      .badge { font-size: 11px; padding: 3px 8px; border-radius: 4px; font-weight: 600; }
+      .badge-success { background: rgba(74, 222, 128, 0.2); color: var(--success); }
+      .badge-warning { background: rgba(251, 191, 36, 0.2); color: #fbbf24; }
+      
+      .card {
+        background: #182234;
+        border: 1px solid var(--border-color);
+        border-radius: 8px;
+        padding: 16px;
+      }
+      .card-title {
+        font-size: 14px;
+        font-weight: 600;
+        margin-bottom: 12px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+      }
+      .field { margin-bottom: 12px; }
+      .field label { display: block; font-size: 12px; color: var(--text-secondary); margin-bottom: 6px; }
+      .input-group { display: flex; gap: 8px; }
+      input, select, textarea {
+        background: var(--input-bg);
+        border: 1px solid var(--border-color);
+        color: var(--text-color);
+        padding: 8px 12px;
+        border-radius: 6px;
+        font-size: 13px;
+        width: 100%;
+        outline: none;
+      }
+      input:focus, select:focus, textarea:focus { border-color: var(--primary); }
+      button {
+        background: var(--primary);
+        color: #0f172a;
+        border: none;
+        padding: 8px 14px;
+        border-radius: 6px;
+        font-weight: 600;
+        cursor: pointer;
+        font-size: 13px;
+        transition: 0.2s;
+      }
+      button:hover { background: var(--primary-hover); }
+      .btn-secondary { background: #334155; color: var(--text-color); }
+      .btn-secondary:hover { background: #475569; }
+
+      .guide-code {
+        background: #090d16;
+        padding: 12px;
+        border-radius: 6px;
+        font-family: var(--font-mono);
+        font-size: 12px;
+        color: #38bdf8;
+        overflow-x: auto;
+        white-space: pre-wrap;
+        margin-top: 8px;
+        position: relative;
+      }
+      .tabs { display: flex; gap: 6px; margin-bottom: 12px; }
+      .tab-btn { background: #0f172a; color: var(--text-secondary); padding: 5px 12px; font-size: 12px; border-radius: 4px; }
+      .tab-btn.active { background: var(--primary); color: #0f172a; }
+
+      /* Live Terminal */
+      .terminal {
+        display: flex;
+        flex-direction: column;
+        height: 100%;
+        background: #182234;
+        border: 1px solid var(--border-color);
+        border-radius: 8px;
+        overflow: hidden;
+      }
+      .terminal-header {
+        padding: 12px 16px;
+        border-bottom: 1px solid var(--border-color);
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        background: #1e293b;
+      }
+      .terminal-body {
+        flex-grow: 1;
+        padding: 16px;
+        overflow-y: auto;
+        font-family: var(--font-mono);
+        font-size: 13px;
+        line-height: 1.6;
+        white-space: pre-wrap;
+      }
+      .terminal-footer {
+        padding: 16px;
+        border-top: 1px solid var(--border-color);
+        background: #1e293b;
+        display: flex;
+        gap: 12px;
+      }
+      .helper-text { font-size: 12px; color: var(--text-secondary); line-height: 1.5; margin-top: 6px; }
     </style>
 </head>
 <body>
-    <main-layout></main-layout>
-    <template id="main-layout-template">
-      <style>
-        .layout { display: flex; width: 100%; height: 100vh; }
-        .sidebar { width: 380px; flex-shrink: 0; background-color: var(--sidebar-bg); border-right: 1px solid var(--border-color); padding: 20px; display: flex; flex-direction: column; overflow-y: auto; }
-        .main-content { flex-grow: 1; display: flex; flex-direction: column; padding: 20px; overflow: hidden; }
-        .header { display: flex; justify-content: space-between; align-items: center; padding-bottom: 15px; margin-bottom: 15px; border-bottom: 1px solid var(--border-color); }
-        .header h1 { margin: 0; font-size: 20px; }
-        .header .version { font-size: 12px; color: var(--text-secondary); margin-left: 8px; }
-        .collapsible-section { margin-top: 20px; }
-        .collapsible-section summary { cursor: pointer; font-weight: bold; margin-bottom: 10px; list-style: none; }
-        .collapsible-section summary::-webkit-details-marker { display: none; }
-        .collapsible-section summary::before { content: '▶'; margin-right: 8px; display: inline-block; transition: transform 0.2s; }
-        .collapsible-section[open] > summary::before { transform: rotate(90deg); }
-        @media (max-width: 768px) { .layout { flex-direction: column; } .sidebar { width: 100%; height: auto; border-right: none; border-bottom: 1px solid var(--border-color); } }
-      </style>
-      <div class="layout">
-        <aside class="sidebar">
-          <header class="header">
-            <h1>${CONFIG.PROJECT_NAME}<span class="version">v${CONFIG.PROJECT_VERSION}</span></h1>
-            <status-indicator></status-indicator>
-          </header>
-          <info-panel></info-panel>
-          <details class="collapsible-section" open><summary>⚙️ 主流客户端集成</summary><client-guides></client-guides></details>
-          <details class="collapsible-section"><summary>📚 模型总览</summary><model-list-panel></model-list-panel></details>
-        </aside>
-        <main class="main-content"><live-terminal></live-terminal></main>
-      </div>
-    </template>
-    <template id="status-indicator-template">
-      <style>
-        .indicator { display: flex; align-items: center; gap: 8px; font-size: 12px; }
-        .dot { width: 10px; height: 10px; border-radius: 50%; transition: background-color 0.3s; }
-        .dot.grey { background-color: #555; } .dot.yellow { background-color: #FFBF00; animation: pulse 2s infinite; } .dot.green { background-color: var(--success-color); } .dot.red { background-color: var(--error-color); }
-        @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(255, 191, 0, 0.4); } 70% { box-shadow: 0 0 0 10px rgba(255, 191, 0, 0); } 100% { box-shadow: 0 0 0 0 rgba(255, 191, 0, 0); } }
-      </style>
-      <div class="indicator"><div id="status-dot" class="dot grey"></div><span id="status-text">正在初始化...</span></div>
-    </template>
-    <template id="info-panel-template">
-      <style>
-        .panel { display: flex; flex-direction: column; gap: 12px; } .info-item { display: flex; flex-direction: column; } .info-item label { font-size: 12px; color: var(--text-secondary); margin-bottom: 4px; }
-        .info-value { background-color: var(--input-bg); padding: 8px 12px; border-radius: 4px; font-family: var(--font-mono); font-size: 13px; color: var(--primary-color); display: flex; align-items: center; justify-content: space-between; word-break: break-all; }
-        .info-value.password { -webkit-text-security: disc; } .info-value.visible { -webkit-text-security: none; } .actions { display: flex; gap: 8px; }
-        .icon-btn { background: none; border: none; color: var(--text-secondary); cursor: pointer; padding: 2px; display: flex; align-items: center; } .icon-btn:hover { color: var(--text-color); } .icon-btn svg { width: 16px; height: 16px; } .skeleton { height: 34px; }
-      </style>
-      <div class="panel">
-        <div class="info-item"><label>API 端点 (Endpoint)</label><div id="api-url" class="info-value skeleton"></div></div>
-        <div class="info-item"><label>API 密钥 (Master Key)</label><div id="api-key" class="info-value password skeleton"></div></div>
-      </div>
-    </template>
-    <template id="client-guides-template">
-       <style>
-        .tabs { display: flex; border-bottom: 1px solid var(--border-color); } .tab { padding: 8px 12px; cursor: pointer; border: none; background: none; color: var(--text-secondary); } .tab.active { color: var(--primary-color); border-bottom: 2px solid var(--primary-color); }
-        .content { padding: 15px 0; } pre { background-color: var(--input-bg); padding: 12px; border-radius: 4px; font-family: var(--font-mono); font-size: 12px; white-space: pre-wrap; word-break: break-all; position: relative; }
-        .copy-code-btn { position: absolute; top: 8px; right: 8px; background: #444; border: 1px solid #555; color: #ccc; border-radius: 4px; cursor: pointer; padding: 2px 6px; font-size: 12px; } .copy-code-btn:hover { background: #555; } .copy-code-btn.copied { background-color: var(--success-color); color: #121212; }
-       </style>
-       <div><div class="tabs"></div><div class="content"></div></div>
-    </template>
-    <template id="model-list-panel-template">
-      <style>
-        .model-list-container { padding-top: 10px; }
-        .model-category h3 { font-size: 14px; color: var(--primary-color); margin: 15px 0 8px 0; border-bottom: 1px solid var(--border-color); padding-bottom: 5px; }
-        .model-list { list-style: none; padding: 0; margin: 0; }
-        .model-list li { background-color: var(--input-bg); padding: 6px 10px; border-radius: 4px; margin-bottom: 5px; font-family: var(--font-mono); font-size: 12px; }
-      </style>
-      <div class="model-list-container"></div>
-    </template>
-    <template id="live-terminal-template">
-      <style>
-        .terminal { display: flex; flex-direction: column; height: 100%; background-color: var(--sidebar-bg); border: 1px solid var(--border-color); border-radius: 8px; overflow: hidden; }
-        .mode-tabs { display: flex; border-bottom: 1px solid var(--border-color); flex-shrink: 0; }
-        .mode-tab { padding: 10px 15px; cursor: pointer; background: none; border: none; color: var(--text-secondary); font-size: 14px; }
-        .mode-tab.active { color: var(--primary-color); border-bottom: 2px solid var(--primary-color); }
-        /* [修改] 为视频功能的提示标签添加样式 */
-        .pro-tag { font-size: 10px; color: var(--primary-color); margin-left: 5px; vertical-align: super; opacity: 0.8; }
-        .output-window { flex-grow: 1; padding: 15px; overflow-y: auto; line-height: 1.6; }
-        .output-window p, .output-window div { margin: 0 0 1em 0; }
-        .output-window .message.user { color: var(--primary-color); font-weight: bold; }
-        .output-window .message.assistant { color: var(--text-color); white-space: pre-wrap; }
-        .output-window .message.error { color: var(--error-color); }
-        .output-window img, .output-window video { max-width: 100%; border-radius: 4px; }
-        .input-area { border-top: 1px solid var(--border-color); padding: 15px; display: flex; flex-direction: column; gap: 10px; }
-        .tab-content { display: none; } .tab-content.active { display: flex; flex-direction: column; gap: 10px; }
-        .param-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-        textarea { flex-grow: 1; resize: none; min-height: 80px; }
-        .submit-btn { background-color: var(--primary-color); color: #121212; border: none; border-radius: 4px; padding: 10px 15px; height: 42px; font-weight: bold; cursor: pointer; display: flex; align-items: center; justify-content: center; }
-        .submit-btn:hover { background-color: var(--primary-hover); } .submit-btn:disabled { background-color: #555; cursor: not-allowed; }
-        .submit-btn.cancel svg { width: 24px; height: 24px; } .submit-btn svg { width: 20px; height: 20px; }
-        .placeholder { color: var(--text-secondary); }
-      </style>
-      <div class="terminal">
-        <div class="mode-tabs">
-          <button class="mode-tab active" data-mode="chat">文生文 (Chat)</button>
-          <!-- [修改] 未修复目前不可用 -->
-          <button class="mode-tab" data-mode="image">文生图 (Image)<span class="pro-tag">未修复目前不可用</span></button>
-          <!-- [修改] 在UI上标注视频功能需要高级账户 -->
-          <button class="mode-tab" data-mode="video">文生视频 (Video)<span class="pro-tag">需高级账户</span></button>
-        </div>
-        <div class="output-window"><p class="placeholder">多模态测试终端已就绪。请选择模式并输入指令...</p></div>
-        <div class="input-area">
-          <!-- Chat Panel -->
-          <div id="chat-panel" class="tab-content active">
-            <select id="chat-model-select"></select>
-            <textarea id="chat-prompt-input" rows="3" placeholder="输入您的对话内容..."></textarea>
-          </div>
-          <!-- Image Panel -->
-          <div id="image-panel" class="tab-content">
-            <select id="image-model-select"></select>
-            <textarea id="image-prompt-input" rows="3" placeholder="输入您的图片描述..."></textarea>
-          </div>
-          <!-- Video Panel -->
-          <div id="video-panel" class="tab-content">
-            <select id="video-model-select"></select>
-            <textarea id="video-prompt-input" rows="3" placeholder="输入您的视频描述... (此功能当前不可用)"></textarea>
-            <div class="param-grid">
-              <input type="text" id="video-size-input" value="1280x720" placeholder="分辨率 (e.g., 1280x720)">
-              <input type="number" id="video-seconds-input" value="8" placeholder="视频时长 (秒)">
-            </div>
-          </div>
-          <button id="submit-btn" class="submit-btn" title="发送/生成">
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor"><path d="M3.105 2.289a.75.75 0 00-.826.95l1.414 4.949a.75.75 0 00.95.544l3.239-1.281a.75.75 0 000-1.39L4.23 6.28a.75.75 0 00-.95-.545L1.865 3.45a.75.75 0 00.95-.826l.002-.007.002-.006zm.002 14.422a.75.75 0 00.95.826l1.415-2.28a.75.75 0 00-.545-.95l-3.239-1.28a.75.75 0 00-1.39 0l-1.28 3.239a.75.75 0 00.544.95l4.95 1.414zM12.75 8.5a.75.75 0 000 1.5h5.5a.75.75 0 000-1.5h-5.5z"/></svg>
-          </button>
+<div class="layout">
+  <aside class="sidebar">
+    <div class="header">
+      <div class="logo">${CONFIG.PROJECT_NAME}<span class="version">v${CONFIG.PROJECT_VERSION}</span></div>
+      <span class="badge ${hasServerTokens ? 'badge-success' : 'badge-warning'}">
+        ${hasServerTokens ? '已就绪 (服务端Token)' : '需配置Token'}
+      </span>
+    </div>
+
+    <!-- API 连接信息 -->
+    <div class="card">
+      <div class="card-title">📡 API 接入地址</div>
+      <div class="field">
+        <label>Base URL (兼容 OpenAI 规范)</label>
+        <div class="input-group">
+          <input type="text" id="api-base-url" value="${origin}/v1" readonly>
+          <button onclick="copyText('${origin}/v1')">复制</button>
         </div>
       </div>
-    </template>
-    <script>
-      const CLIENT_CONFIG = { 
-        WORKER_ORIGIN: '${origin}', 
-        API_MASTER_KEY: '${CONFIG.API_MASTER_KEY}', 
-        CHAT_MODELS: JSON.parse('${JSON.stringify(CONFIG.CHAT_MODELS)}'),
-        IMAGE_MODELS: JSON.parse('${JSON.stringify(CONFIG.IMAGE_MODELS)}'),
-        VIDEO_MODELS: JSON.parse('${JSON.stringify(CONFIG.VIDEO_MODELS)}'),
-        DEFAULT_CHAT_MODEL: '${CONFIG.DEFAULT_CHAT_MODEL}',
-        CUSTOM_MODELS_STRING: '${allModels.map(m => `+${m}`).join(',')}' 
-      };
+      <div class="field">
+        <label>API Key / Master Key</label>
+        <div class="input-group">
+          <input type="text" id="api-master-key" value="${runtimeConfig.API_MASTER_KEY || '空 (无需鉴权)'}" readonly>
+          <button class="btn-secondary" onclick="copyText('${runtimeConfig.API_MASTER_KEY || 'sk-puter-proxy'}')">复制</button>
+        </div>
+      </div>
+    </div>
 
-      const AppState = { INITIALIZING: 'INITIALIZING', HEALTH_CHECKING: 'HEALTH_CHECKING', READY: 'READY', REQUESTING: 'REQUESTING', STREAMING: 'STREAMING', ERROR: 'ERROR' };
-      let currentState = AppState.INITIALIZING;
-      let abortController = null;
+    <!-- 本地 Puter Token 设置 -->
+    <div class="card">
+      <div class="card-title">🔑 自定义 Puter Token (浏览器端)</div>
+      <p class="helper-text">若 Worker 环境变量未配置 Token，或想使用您自己的 Puter 额度，可在此处填入：</p>
+      <div class="field" style="margin-top: 10px;">
+        <input type="password" id="custom-token-input" placeholder="输入 eyJhbGciOi... (自动保存在本地)">
+      </div>
+      <div class="input-group">
+        <button onclick="saveCustomToken()">保存凭证</button>
+        <button class="btn-secondary" onclick="clearCustomToken()">清除</button>
+      </div>
+      <p class="helper-text" style="margin-top: 8px;">
+        💡 <strong>如何获取？</strong> 登录 <a href="https://puter.com/dashboard" target="_blank" style="color:var(--primary);">puter.com/dashboard</a>，点击个人头像并选择 <strong>Reveal Auth Token</strong> 即可一键复制。
+      </p>
+    </div>
 
-      class BaseComponent extends HTMLElement {
-        constructor(id) {
-          super();
-          this.attachShadow({ mode: 'open' });
-          const template = document.getElementById(id);
-          if (template) this.shadowRoot.appendChild(template.content.cloneNode(true));
-        }
+    <!-- 客户端快速接入 -->
+    <div class="card">
+      <div class="card-title">📱 客户端配置示例</div>
+      <div class="tabs">
+        <button class="tab-btn active" onclick="switchTab('nextchat')">NextChat</button>
+        <button class="tab-btn" onclick="switchTab('lobechat')">LobeChat</button>
+        <button class="tab-btn" onclick="switchTab('python')">Python</button>
+        <button class="tab-btn" onclick="switchTab('curl')">cURL</button>
+      </div>
+      <div id="guide-content" class="guide-code"></div>
+    </div>
+  </aside>
+
+  <main class="main-content">
+    <div class="terminal">
+      <div class="terminal-header">
+        <div style="display:flex; align-items:center; gap:12px;">
+          <strong>在线测试终端 (Chat Playground)</strong>
+          <select id="model-select" style="width: auto; padding: 4px 8px;">
+            ${CONFIG.COMMON_CHAT_MODELS.map(m => `<option value="${m}">${m}</option>`).join("")}
+          </select>
+        </div>
+        <div style="display:flex; align-items:center; gap:8px;">
+          <label style="font-size:12px; color:var(--text-secondary);">
+            <input type="checkbox" id="stream-checkbox" checked style="width:auto; margin-right:4px;"> 流式输出 (Stream)
+          </label>
+          <button class="btn-secondary" onclick="clearTerminal()">清屏</button>
+        </div>
+      </div>
+      <div class="terminal-body" id="terminal-output">就绪。请在下方输入内容点击发送，测试与 Puter 驱动的连通性...</div>
+      <div class="terminal-footer">
+        <textarea id="prompt-input" rows="2" placeholder="输入测试问题 (例如: 你好，请用100字介绍你自己)..."></textarea>
+        <button id="send-btn" onclick="sendPrompt()" style="height: 100%; min-width: 100px;">发送</button>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script>
+  const BASE_URL = "${origin}/v1";
+  const DEFAULT_KEY = "${runtimeConfig.API_MASTER_KEY || 'sk-puter-proxy'}";
+
+  // 读取本地存储的 Token
+  window.addEventListener("DOMContentLoaded", () => {
+    const saved = localStorage.getItem("puter_custom_auth_token");
+    if (saved) document.getElementById("custom-token-input").value = saved;
+    switchTab('nextchat');
+  });
+
+  function saveCustomToken() {
+    const val = document.getElementById("custom-token-input").value.trim();
+    if (!val) { alert("请输入有效的 Token"); return; }
+    localStorage.setItem("puter_custom_auth_token", val);
+    alert("已成功保存至浏览器 localStorage！");
+  }
+
+  function clearCustomToken() {
+    localStorage.removeItem("puter_custom_auth_token");
+    document.getElementById("custom-token-input").value = "";
+    alert("已清除本地 Token。");
+  }
+
+  function copyText(txt) {
+    navigator.clipboard.writeText(txt);
+    alert("已复制到剪贴板！");
+  }
+
+  function clearTerminal() {
+    document.getElementById("terminal-output").textContent = "终端已清空。";
+  }
+
+  const GUIDES = {
+    nextchat: "接口地址 (Base URL): " + BASE_URL + "\\nAPI Key: " + DEFAULT_KEY + "\\n自定义模型: +gpt-4o-mini,+gpt-4o,+claude-3-5-sonnet,+deepseek-chat",
+    lobechat: "代理地址: " + BASE_URL + "\\nAPI Key: " + DEFAULT_KEY + "\\n支持全部 OpenAI 格式模型",
+    python: "import openai\\n\\nclient = openai.OpenAI(\\n    base_url='" + BASE_URL + "',\\n    api_key='" + DEFAULT_KEY + "'\\n)\\n\\nres = client.chat.completions.create(\\n    model='gpt-4o-mini',\\n    messages=[{'role': 'user', 'content': 'Hello!'}],\\n    stream=True\\n)\\nfor chunk in res:\\n    print(chunk.choices[0].delta.content or '', end='')",
+    curl: "curl " + BASE_URL + "/chat/completions \\\\\\n  -H 'Content-Type: application/json' \\\\\\n  -H 'Authorization: Bearer " + DEFAULT_KEY + "' \\\\\\n  -d '{\\n    \\\"model\\\": \\\"gpt-4o-mini\\\",\\n    \\\"messages\\\": [{\\\"role\\\": \\\"user\\\", \\\"content\\\": \\\"Hello!\\\"}],\\n    \\\"stream\\\": true\\n  }'"
+  };
+
+  function switchTab(name) {
+    document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
+    event && event.target && event.target.classList.add("active");
+    document.getElementById("guide-content").textContent = GUIDES[name];
+  }
+
+  async function sendPrompt() {
+    const prompt = document.getElementById("prompt-input").value.trim();
+    if (!prompt) return;
+
+    const model = document.getElementById("model-select").value;
+    const isStream = document.getElementById("stream-checkbox").checked;
+    const outputEl = document.getElementById("terminal-output");
+    const sendBtn = document.getElementById("send-btn");
+    const customToken = localStorage.getItem("puter_custom_auth_token");
+
+    outputEl.textContent = "⏳ 正在发起请求...\\n";
+    sendBtn.disabled = true;
+
+    const headers = {
+      "Content-Type": "application/json",
+      "Authorization": "Bearer " + DEFAULT_KEY
+    };
+    if (customToken) {
+      headers["X-Puter-Auth-Token"] = customToken;
+    }
+
+    try {
+      const res = await fetch(BASE_URL + "/chat/completions", {
+        method: "POST",
+        headers: headers,
+        body: JSON.stringify({
+          model: model,
+          messages: [{ role: "user", content: prompt }],
+          stream: isStream
+        })
+      });
+
+      if (!res.ok) {
+        const err = await res.text();
+        outputEl.textContent = "❌ 请求失败 (" + res.status + "):\\n" + err;
+        sendBtn.disabled = false;
+        return;
       }
 
-      class MainLayout extends BaseComponent { constructor() { super('main-layout-template'); } }
-      customElements.define('main-layout', MainLayout);
-
-      class StatusIndicator extends BaseComponent {
-        constructor() { super('status-indicator-template'); this.dot = this.shadowRoot.getElementById('status-dot'); this.text = this.shadowRoot.getElementById('status-text'); }
-        setState(state, message) {
-          this.dot.className = 'dot';
-          switch (state) {
-            case 'checking': this.dot.classList.add('yellow'); break;
-            case 'ok': this.dot.classList.add('green'); break;
-            case 'error': this.dot.classList.add('red'); break;
-            default: this.dot.classList.add('grey'); break;
-          }
-          this.text.textContent = message;
-        }
+      if (!isStream) {
+        const data = await res.json();
+        outputEl.textContent = data.choices[0]?.message?.content || JSON.stringify(data, null, 2);
+        sendBtn.disabled = false;
+        return;
       }
-      customElements.define('status-indicator', StatusIndicator);
 
-      class InfoPanel extends BaseComponent {
-        constructor() { super('info-panel-template'); this.apiUrlEl = this.shadowRoot.getElementById('api-url'); this.apiKeyEl = this.shadowRoot.getElementById('api-key'); }
-        connectedCallback() { this.render(); }
-        render() {
-          this.populateField(this.apiUrlEl, CLIENT_CONFIG.WORKER_ORIGIN + '/v1');
-          this.populateField(this.apiKeyEl, CLIENT_CONFIG.API_MASTER_KEY, true);
-        }
-        populateField(el, value, isPassword = false) {
-          el.classList.remove('skeleton');
-          el.innerHTML = \`<span>\${value}</span><div class="actions">\${isPassword ? '<button class="icon-btn" data-action="toggle-visibility" title="切换可见性"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor"><path d="M10 12.5a2.5 2.5 0 100-5 2.5 2.5 0 000 5z"/><path fill-rule="evenodd" d="M.664 10.59a1.651 1.651 0 010-1.18l.88-1.473a1.65 1.65 0 012.899 0l.88 1.473a1.65 1.65 0 010 1.18l-.88 1.473a1.65 1.65 0 01-2.899 0l-.88-1.473zM18.45 10.59a1.651 1.651 0 010-1.18l.88-1.473a1.65 1.65 0 012.899 0l.88 1.473a1.65 1.65 0 010 1.18l-.88 1.473a1.65 1.65 0 01-2.899 0l-.88-1.473zM10 17a1.651 1.651 0 01-1.18 0l-1.473-.88a1.65 1.65 0 010-2.899l1.473-.88a1.651 1.651 0 011.18 0l1.473.88a1.65 1.65 0 010 2.899l-1.473.88a1.651 1.651 0 01-1.18 0z" clip-rule="evenodd"/></svg></button>' : ''}<button class="icon-btn" data-action="copy" title="复制"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor"><path d="M7 3.5A1.5 1.5 0 018.5 2h3.879a1.5 1.5 0 011.06.44l3.122 3.121A1.5 1.5 0 0117 6.621V16.5a1.5 1.5 0 01-1.5 1.5h-7A1.5 1.5 0 017 16.5v-13z"/><path d="M5 6.5A1.5 1.5 0 016.5 5h3.879a1.5 1.5 0 011.06.44l3.122 3.121A1.5 1.5 0 0115 9.621V14.5a1.5 1.5 0 01-1.5 1.5h-7A1.5 1.5 0 015 14.5v-8z"/></svg></button></div>\`;
-          el.querySelector('[data-action="copy"]').addEventListener('click', () => navigator.clipboard.writeText(value));
-          if (isPassword) el.querySelector('[data-action="toggle-visibility"]').addEventListener('click', () => el.classList.toggle('visible'));
-        }
-      }
-      customElements.define('info-panel', InfoPanel);
+      // 处理流式
+      outputEl.textContent = "";
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
 
-      class ClientGuides extends BaseComponent {
-        constructor() { super('client-guides-template'); this.tabs = this.shadowRoot.querySelector('.tabs'); this.content = this.shadowRoot.querySelector('.content'); this.guides = { 'cURL': this.getCurlGuide(), 'Python': this.getPythonGuide(), 'LobeChat': this.getLobeChatGuide(), 'Next-Web': this.getNextWebGuide() }; }
-        connectedCallback() {
-          Object.keys(this.guides).forEach((name, index) => { const tab = document.createElement('button'); tab.className = 'tab'; tab.textContent = name; if (index === 0) tab.classList.add('active'); tab.addEventListener('click', () => this.switchTab(name)); this.tabs.appendChild(tab); });
-          this.switchTab(Object.keys(this.guides)[0]);
-          this.content.addEventListener('click', (e) => { const button = e.target.closest('.copy-code-btn'); if (button) { const code = button.closest('pre').querySelector('code').innerText; navigator.clipboard.writeText(code).then(() => { button.textContent = '已复制!'; button.classList.add('copied'); setTimeout(() => { button.textContent = '复制'; button.classList.remove('copied'); }, 2000); }); } });
-        }
-        switchTab(name) { this.tabs.querySelector('.active')?.classList.remove('active'); const newActiveTab = Array.from(this.tabs.children).find(tab => tab.textContent === name); newActiveTab?.classList.add('active'); this.content.innerHTML = this.guides[name]; }
-        getCurlGuide() { return \`<pre><button class="copy-code-btn">复制</button><code>curl --location '\\\${CLIENT_CONFIG.WORKER_ORIGIN}/v1/chat/completions' \\\\<br>--header 'Content-Type: application/json' \\\\<br>--header 'Authorization: Bearer \\\${CLIENT_CONFIG.API_MASTER_KEY}' \\\\<br>--data '{<br>    "model": "\\\${CLIENT_CONFIG.DEFAULT_CHAT_MODEL}",<br>    "messages": [{"role": "user", "content": "你好"}],<br>    "stream": true<br>}'</code></pre>\`; }
-        getPythonGuide() { return \`<pre><button class="copy-code-btn">复制</button><code>import openai<br><br>client = openai.OpenAI(<br>    api_key="\\\${CLIENT_CONFIG.API_MASTER_KEY}",<br>    base_url="\\\${CLIENT_CONFIG.WORKER_ORIGIN}/v1"<br>)<br><br>stream = client.chat.completions.create(<br>    model="\\\${CLIENT_CONFIG.DEFAULT_CHAT_MODEL}",<br>    messages=[{"role": "user", "content": "你好"}],<br>    stream=True,<br>)<br><br>for chunk in stream:<br>    print(chunk.choices[0].delta.content or "", end="")</code></pre>\`; }
-        getLobeChatGuide() { return \`<p>在 LobeChat 设置中:</p><pre><button class="copy-code-btn">复制</button><code>API Key: \\\${CLIENT_CONFIG.API_MASTER_KEY}<br>API 地址: \\\${CLIENT_CONFIG.WORKER_ORIGIN}<br>模型列表: (请留空或手动填入)</code></pre>\`; }
-        getNextWebGuide() { return \`<p>在 ChatGPT-Next-Web 部署时:</p><pre><button class="copy-code-btn">复制</button><code>CODE=\\\${CLIENT_CONFIG.API_MASTER_KEY}<br>BASE_URL=\\\${CLIENT_CONFIG.WORKER_ORIGIN}<br>CUSTOM_MODELS=\\\${CLIENT_CONFIG.CUSTOM_MODELS_STRING}</code></pre>\`; }
-      }
-      customElements.define('client-guides', ClientGuides);
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\\n");
+        buffer = lines.pop();
 
-      class ModelListPanel extends BaseComponent {
-        constructor() { super('model-list-panel-template'); this.container = this.shadowRoot.querySelector('.model-list-container'); }
-        connectedCallback() { this.render(); }
-        render() {
-          const categories = { '文生文 (Chat)': CLIENT_CONFIG.CHAT_MODELS, '文生图 (Image)': CLIENT_CONFIG.IMAGE_MODELS, '文生视频 (Video)': CLIENT_CONFIG.VIDEO_MODELS };
-          for (const [title, models] of Object.entries(categories)) {
-            if (models.length > 0) {
-              const categoryDiv = document.createElement('div');
-              categoryDiv.className = 'model-category';
-              categoryDiv.innerHTML = \`<h3>\${title}</h3><ul class="model-list">\${models.map(m => \`<li>\${m}</li>\`).join('')}</ul>\`;
-              this.container.appendChild(categoryDiv);
-            }
-          }
-        }
-      }
-      customElements.define('model-list-panel', ModelListPanel);
-
-      class LiveTerminal extends BaseComponent {
-        constructor() {
-          super('live-terminal-template');
-          this.activeMode = 'chat';
-          this.output = this.shadowRoot.querySelector('.output-window');
-          this.btn = this.shadowRoot.getElementById('submit-btn');
-          this.tabs = this.shadowRoot.querySelectorAll('.mode-tab');
-          this.panels = this.shadowRoot.querySelectorAll('.tab-content');
-          
-          this.inputs = {
-            chat: { model: this.shadowRoot.getElementById('chat-model-select'), prompt: this.shadowRoot.getElementById('chat-prompt-input') },
-            image: { model: this.shadowRoot.getElementById('image-model-select'), prompt: this.shadowRoot.getElementById('image-prompt-input') },
-            video: { model: this.shadowRoot.getElementById('video-model-select'), prompt: this.shadowRoot.getElementById('video-prompt-input'), size: this.shadowRoot.getElementById('video-size-input'), seconds: this.shadowRoot.getElementById('video-seconds-input') }
-          };
-
-          this.sendIcon = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor"><path d="M3.105 2.289a.75.75 0 00-.826.95l1.414 4.949a.75.75 0 00.95.544l3.239-1.281a.75.75 0 000-1.39L4.23 6.28a.75.75 0 00-.95-.545L1.865 3.45a.75.75 0 00.95-.826l.002-.007.002-.006zm.002 14.422a.75.75 0 00.95.826l1.415-2.28a.75.75 0 00-.545-.95l-3.239-1.28a.75.75 0 00-1.39 0l-1.28 3.239a.75.75 0 00.544.95l4.95 1.414zM12.75 8.5a.75.75 0 000 1.5h5.5a.75.75 0 000-1.5h-5.5z"/></svg>';
-          this.cancelIcon = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor"><path d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.28 7.22a.75.75 0 00-1.06 1.06L8.94 10l-1.72 1.72a.75.75 0 101.06 1.06L10 11.06l1.72 1.72a.75.75 0 101.06-1.06L11.06 10l1.72-1.72a.75.75 0 00-1.06-1.06L10 8.94 8.28 7.22z"/></svg>';
-        }
-        connectedCallback() {
-          this.btn.addEventListener('click', () => this.handleSubmit());
-          this.tabs.forEach(tab => tab.addEventListener('click', () => this.switchMode(tab.dataset.mode)));
-          this.populateModels();
-        }
-        populateModels() {
-          this.populateSelect(this.inputs.chat.model, CLIENT_CONFIG.CHAT_MODELS);
-          this.populateSelect(this.inputs.image.model, CLIENT_CONFIG.IMAGE_MODELS);
-          this.populateSelect(this.inputs.video.model, CLIENT_CONFIG.VIDEO_MODELS);
-        }
-        populateSelect(selectEl, models) {
-          if (!selectEl || !models || models.length === 0) return;
-          selectEl.innerHTML = models.map(m => \`<option value="\${m}">\${m}</option>\`).join('');
-        }
-        switchMode(mode) {
-          this.activeMode = mode;
-          this.tabs.forEach(t => t.classList.toggle('active', t.dataset.mode === mode));
-          this.panels.forEach(p => p.classList.toggle('active', p.id === \`\${mode}-panel\`));
-        }
-        handleSubmit() {
-          if (currentState === AppState.REQUESTING || currentState === AppState.STREAMING) {
-            this.cancelRequest();
-          } else {
-            this.startRequest();
-          }
-        }
-        addMessage(role, content, isHtml = false) {
-          const el = document.createElement('div');
-          el.className = 'message ' + role;
-          if (isHtml) {
-            el.innerHTML = content;
-          } else {
-            el.textContent = content;
-          }
-          this.output.appendChild(el);
-          this.output.scrollTop = this.output.scrollHeight;
-          return el;
-        }
-        async startRequest() {
-          const currentInputs = this.inputs[this.activeMode];
-          const prompt = currentInputs.prompt.value.trim();
-          if (!prompt) return;
-
-          setState(AppState.REQUESTING);
-          this.output.innerHTML = '';
-          this.addMessage('user', prompt);
-          abortController = new AbortController();
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed || !trimmed.startsWith("data: ")) continue;
+          const payload = trimmed.slice(6).trim();
+          if (payload === "[DONE]") continue;
 
           try {
-            switch (this.activeMode) {
-              case 'chat': await this.handleChatRequest(prompt); break;
-              case 'image': await this.handleImageRequest(prompt); break;
-              case 'video': await this.handleVideoRequest(prompt); break;
-            }
-          } catch (e) {
-            if (e.name !== 'AbortError') {
-              this.addMessage('error', '请求失败: ' + e.message);
-              setState(AppState.ERROR);
-            }
-          } finally {
-            if (currentState !== AppState.ERROR && currentState !== AppState.INITIALIZING) {
-              setState(AppState.READY);
-            }
-          }
-        }
-        async handleChatRequest(prompt) {
-          const model = this.inputs.chat.model.value;
-          const assistantEl = this.addMessage('assistant', '▍');
-          
-          const response = await fetch(CLIENT_CONFIG.WORKER_ORIGIN + '/v1/chat/completions', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + CLIENT_CONFIG.API_MASTER_KEY },
-            body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }], stream: true }),
-            signal: abortController.signal,
-          });
-          if (!response.ok) throw new Error((await response.json()).error.message);
-
-          setState(AppState.STREAMING);
-          const reader = response.body.getReader();
-          const decoder = new TextDecoder();
-          let fullResponse = '';
-
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            const chunk = decoder.decode(value);
-            const lines = chunk.split('\\n').filter(line => line.startsWith('data:'));
-            for (const line of lines) {
-              const data = line.substring(5).trim();
-              if (data === '[DONE]') { assistantEl.textContent = fullResponse; return; }
-              try {
-                const json = JSON.parse(data);
-                const delta = json.choices[0].delta.content;
-                if (delta) { fullResponse += delta; assistantEl.textContent = fullResponse + '▍'; this.output.scrollTop = this.output.scrollHeight; }
-              } catch (e) {}
-            }
-          }
-          assistantEl.textContent = fullResponse;
-        }
-        async handleImageRequest(prompt) {
-          const model = this.inputs.image.model.value;
-          this.addMessage('assistant', '正在生成图片...');
-          const response = await fetch(CLIENT_CONFIG.WORKER_ORIGIN + '/v1/images/generations', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + CLIENT_CONFIG.API_MASTER_KEY },
-            body: JSON.stringify({ model, prompt }),
-            signal: abortController.signal,
-          });
-          if (!response.ok) throw new Error((await response.json()).error.message);
-          const result = await response.json();
-          const b64 = result.data[0].b64_json;
-          this.output.innerHTML = '';
-          this.addMessage('user', prompt);
-          this.addMessage('assistant', \`<img src="data:image/png;base64,\${b64}" alt="Generated Image"> \`, true);
-        }
-        async handleVideoRequest(prompt) {
-          const model = this.inputs.video.model.value;
-          const size = this.inputs.video.size.value;
-          const seconds = parseInt(this.inputs.video.seconds.value, 10);
-          this.addMessage('assistant', '正在请求视频生成...');
-          const response = await fetch(CLIENT_CONFIG.WORKER_ORIGIN + '/v1/videos/generations', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + CLIENT_CONFIG.API_MASTER_KEY },
-            body: JSON.stringify({ model, prompt, size, seconds }),
-            signal: abortController.signal,
-          });
-          // [修改] 前端将直接处理后端返回的错误信息
-          if (!response.ok) throw new Error((await response.json()).error.message);
-          const result = await response.json();
-          const url = result.data[0].url;
-          this.output.innerHTML = '';
-          this.addMessage('user', prompt);
-          this.addMessage('assistant', \`<video src="\${url}" controls autoplay muted loop playsinline></video>\`, true);
-        }
-        cancelRequest() {
-          if (abortController) {
-            abortController.abort();
-            abortController = null;
-          }
-          setState(AppState.READY);
-        }
-        updateButton(state) {
-          if (state === AppState.REQUESTING || state === AppState.STREAMING) {
-            this.btn.innerHTML = this.cancelIcon;
-            this.btn.title = "取消";
-            this.btn.classList.add('cancel');
-            this.btn.disabled = false;
-          } else {
-            this.btn.innerHTML = this.sendIcon;
-            this.btn.title = "发送/生成";
-            this.btn.classList.remove('cancel');
-            this.btn.disabled = state !== AppState.READY;
-          }
+            const parsed = JSON.parse(payload);
+            const content = parsed.choices?.[0]?.delta?.content || "";
+            outputEl.textContent += content;
+            outputEl.scrollTop = outputEl.scrollHeight;
+          } catch(e) {}
         }
       }
-      customElements.define('live-terminal', LiveTerminal);
-
-      function setState(newState) {
-        currentState = newState;
-        const terminal = document.querySelector('live-terminal');
-        if (terminal) terminal.updateButton(newState);
-      }
-
-      async function healthCheck() {
-        const statusIndicator = document.querySelector('main-layout')?.shadowRoot.querySelector('status-indicator');
-        if (!statusIndicator) return;
-        statusIndicator.setState('checking', '检查服务...');
-        try {
-          const response = await fetch(CLIENT_CONFIG.WORKER_ORIGIN + '/v1/models', { headers: { 'Authorization': 'Bearer ' + CLIENT_CONFIG.API_MASTER_KEY } });
-          if (response.ok) {
-            statusIndicator.setState('ok', '服务正常');
-            setState(AppState.READY);
-          } else {
-            throw new Error((await response.json()).error.message);
-          }
-        } catch (e) {
-          statusIndicator.setState('error', '检查失败');
-          setState(AppState.ERROR);
-        }
-      }
-
-      document.addEventListener('DOMContentLoaded', () => {
-        setState(AppState.INITIALIZING);
-        customElements.whenDefined('main-layout').then(() => {
-          healthCheck();
-        });
-      });
-    <\/script>
+    } catch (e) {
+      outputEl.textContent = "❌ 网络或执行异常: " + e.message;
+    } finally {
+      sendBtn.disabled = false;
+    }
+  }
+</script>
 </body>
 </html>`;
 
   return new Response(html, {
-    headers: { 'Content-Type': 'text/html; charset=utf-8' },
+    headers: { "Content-Type": "text/html; charset=utf-8" }
   });
 }

@@ -1,0 +1,7 @@
+name = "puter-2api"
+main = "worker.js"
+compatibility_date = "2024-09-23"
+
+# [vars]
+# API_MASTER_KEY = "your-api-key"
+# PUTER_AUTH_TOKENS = "token1,token2"

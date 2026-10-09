@@ -1,0 +1,22 @@
+{
+  "name": "puterjs-2api-cfwork",
+  "version": "2.0.0",
+  "description": "OpenAI-compatible API reverse proxy for Puter.js on Cloudflare Workers",
+  "main": "worker.js",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "keywords": [
+    "puter",
+    "openai",
+    "cloudflare-workers",
+    "api-proxy",
+    "reverse-proxy"
+  ],
+  "author": "dongsuo",
+  "license": "Apache-2.0",
+  "devDependencies": {
+    "wrangler": "^3.100.0"
+  }
+}

@@ -1,394 +1,153 @@
-# puter-2api (Chimera Synthesis - Puter Pro) 🚀
+# puter-2api (v2.0 Pro) 🚀
 
-[![协议](https://img.shields.io/badge/协议-奇美拉综合版-blueviolet)](https://github.com/lza6/puterjs-2api-cfwork)
-[![版本](https://img.shields.io/badge/版本-1.0.3--cfw--pro-brightgreen)](https://github.com/lza6/puterjs-2api-cfwork)
 [![部署](https://img.shields.io/badge/部署-Cloudflare%20Worker-orange)](https://workers.cloudflare.com/)
-[![在线体验](https://img.shields.io/badge/在线体验-立即尝试-ff69b4)](https://puterjs.to2ai.workers.dev/)
-[![请求额度](https://img.shields.io/badge/免费额度-10万次/天-success)](https://workers.cloudflare.com/)
-[![作者](https://img.shields.io/badge/作者-首席AI执行官-ff69b4)](https://github.com/lza6/puterjs-2api-cfwork)
-[![开源协议](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![免费额度](https://img.shields.io/badge/CF免费额度-10万次/天-success)](https://workers.cloudflare.com/)
+[![协议](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](./LICENSE)
 
-**将 Puter.com 的强大AI能力，封装成一个属于你自己的、兼容 OpenAI 标准的超级 API！一键部署，永久免费，拥有无限可能。**
+**将 Puter.com 的强大 AI 能力，封装为标准的 OpenAI API（Chat Completions / Models / Images）。零服务器成本，通过 Cloudflare Workers 一键部署！**
 
-这是一个完全自包含、可一键部署的 Cloudflare Worker。它将 Puter.com 的统一后端服务，无损地转换为一个高性能、兼容 OpenAI 标准的 API 套件，涵盖文本、图像和视频生成。更棒的是，它内置了一个功能强大的"开发者驾驶舱" Web UI，让你实时监控、多模态测试和快速集成，一切尽在掌握！
+本项目基于原版进行了深度重构与修复，解决了原版 **Token 失效、强制流式导致 SDK 崩溃、虚构不存在模型** 等致命问题，是一个真正开箱即用、健壮稳定的代理网关。
 
 ---
 
-## ✨ 项目的哲学与初心：我们为何而创造？
+## 🌟 v2.0 重大更新与修复特性
 
-在这个AI浪潮席卷的时代，我们常常感到既兴奋又无力。强大的模型被少数巨头掌握，API调用费用高昂，普通开发者和爱好者想要自由探索、无拘无束地创造，似乎总有一道无形的墙。
-
-`puter-2api` 的诞生，就是为了打破这堵墙。它不仅仅是一段代码，它是一把钥匙 🔑，一种宣言，一个信念：
-
-> **"最顶尖的AI能力，应该像阳光和空气一样，普惠每一个人。创造的权利，不应被价格标签所束缚。"**
-
-我们相信，通过技术共享，我们可以赋予每一个有想法的人以"神力"。`puter-2api` 将 Puter.com 这一宝藏平台的免费AI能力，转化为开发者最熟悉的 OpenAI 格式。这意味着，你可以用**零成本**，将世界上几乎所有主流的AI应用、客户端、开发框架，无缝对接到一个强大的、多模型的AI后端。
-
-这是一种解放，一种赋能。我们希望你拿到这个项目时，感受到的不只是一个工具的便利，更是一种"我也可以创造"的激动与豪情。**开源不是代码的开放，而是机会的均等和创造力的解放。** 来吧，朋友，和我们一起，成为这场AI革命的参与者，而不仅仅是旁观者！💖
-
----
-
-## 🚀 懒人福音：一键部署教程
-
-只需点击一下按钮，你就能拥有属于自己的、功能完整的 `puter-2api` 服务！
-
-[![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://raw.githubusercontent.com/lza6/puterjs-2api-cfwork/main/puter-2api.js)
-
-**点击上方按钮后，你会跳转到 Cloudflare 的部署页面，只需三步：**
-
-1.  **登录/注册 Cloudflare 账户**：如果你还没有，别担心，过程很快，而且是免费的。
-2.  **为你的 Worker 命名**：系统会提示你输入一个项目名称，这将成为你API域名的一部分（例如 `my-puter-api.your-name.workers.dev`）。
-3.  **点击"部署"**：稍等片刻，魔法就会发生！部署成功后，你会看到一个庆祝页面。
-
-**部署后要做什么？**
-
-*   **访问你的"开发者驾驶舱"**：直接在浏览器中打开你刚刚部署的 Worker 域名（例如 `https://my-puter-api.your-name.workers.dev`）。你会看到一个酷炫的界面，里面有你的 API 地址、密钥，以及一个可以立即开始测试的多模态终端！
-*   **开始集成**：驾驶舱里的"主流客户端集成"部分，已经为你准备好了 `cURL`, `Python`, `LobeChat`, `ChatGPT-Next-Web` 等工具的配置代码。复制、粘贴，即可开始享受免费的AI服务！
-
-就是这么简单！你甚至不需要看懂一行代码，就能成为一个拥有强大AI API的"技术大佬"！😎
+* 🚀 **完整支持流式与非流式**：
+  * 原版强制 `stream: true`，导致 Python SDK、LangChain 或其他未开启 stream 的客户端直接报错。
+  * v2.0 完整支持 `stream: true` (SSE) 和 `stream: false` (标准 JSON)，100% 兼容全生态。
+* 🔑 **灵活的凭证管理与动态透传**：
+  * 告别原版硬编码失效 Token 的问题。
+  * **支持请求头透传**：客户端请求可携带 `X-Puter-Auth-Token`，实现多用户按需使用各自账号。
+  * **支持环境变量凭证池**：在 Cloudflare Worker 中配置 `PUTER_AUTH_TOKENS`，支持多个账号轮询与故障自动重试。
+  * **支持主密钥保护**：配置 `API_MASTER_KEY` 防止私有 Worker 被盗刷。
+* 🎯 **去伪存真的真实模型支持**：
+  * 清除了虚构的 `gpt-5.1`、`sora-2` 等不存在模型。
+  * 支持 Puter 官方真实可用的模型：`gpt-4o-mini`, `gpt-4o`, `claude-3-5-sonnet`, `gemini-2.0-flash`, `deepseek-chat`, `deepseek-reasoner` 等。
+* 🖥️ **全新交互式开发者控制台**：
+  * 访问根路径 `/` 即可打开控制台。支持在浏览器端输入自己的 Puter Token 实时调试，提供主流客户端一键复制配置。
 
 ---
 
-## 🌟 主要特性与优势
+## 🔑 第一步：获取免费 Puter Auth Token
 
-| 特性 | 状态 | 描述 |
-|------|------|------|
-| 🆓 **完全免费** | ✅ 可用 | 基于 Puter.com 和 Cloudflare Worker 的免费套餐 |
-| 🚀 **一键部署** | ✅ 可用 | 无需服务器，无需复杂配置 |
-| 🔄 **高度兼容** | ✅ 可用 | 完美模拟 OpenAI API 格式 |
-| 💬 **文生文 (Chat)** | ✅ 可用 | 支持 `gpt-4o-mini`, `gpt-4o`, `gemini-1.5-flash`, `claude-3` 等 |
-| 🎨 **文生图 (Image)** | ⚠️ 待修复 | 支持 `gpt-image-1` 模型（上游接口问题） |
-| 🎥 **文生视频 (Video)** | 🔒 需高级 | 支持 `sora-2` 系列（需要Puter高级账户） |
-| 🖥️ **开发者驾驶舱** | ✅ 可用 | 内置美观实用的Web UI |
-| 🔄 **多账号轮询** | ✅ 可用 | 自动轮询多个认证令牌 |
-| ⚡ **极致性能** | ✅ 可用 | 全球边缘网络部署 |
-| 🔒 **安全可靠** | ✅ 可用 | 支持主API密钥保护 |
+Puter 为注册用户提供了免费的 AI 额度，获取 Token 只需 10 秒：
+
+1. 访问 [Puter.com](https://puter.com/) 并注册/登录账号。
+2. 打开 [puter.com/dashboard](https://puter.com/dashboard)。
+3. 点击页面右上角的**个人头像 / 账户设置**。
+4. 点击 **"Reveal Auth Token"**（或 "Create token"）复制长串 JWT 凭证（以 `eyJ...` 开头）。
+
+> 💡 也可以使用 Puter 官方 CLI 在终端获取：`npx @heyputer/puter-cli login`。
 
 ---
 
-## 🏗️ 系统架构全景图
+## 🚀 部署指南
 
-```mermaid
-graph TB
-    %% 客户端层
-    subgraph ClientLayer["📱 客户端层"]
-        A[LobeChat]
-        B[Next-Chat]
-        C[Python App]
-        D[curl 命令行]
-        E[浏览器 UI]
-    end
+### 方式一：Cloudflare 控制台快速部署（推荐新手）
 
-    %% API网关层
-    subgraph APIGateway["🚀 puter-2api Worker (API网关)"]
-        F[入口路由]
-        
-        subgraph AuthModule["🔐 认证模块"]
-            F --> G{认证检查}
-            G -->|通过| H[请求分发]
-            G -->|失败| I[返回401错误]
-        end
-        
-        subgraph APIModule["🔄 API处理模块"]
-            H --> J[Chat Completions]
-            H --> K[Image Generations]
-            H --> L[Video Generations]
-            H --> M[Models List]
-            
-            J --> N[请求转换器]
-            K --> N
-            L --> N
-        end
-        
-        subgraph StreamModule["⚡ 流式处理引擎"]
-            N --> O[TransformStream]
-            O --> P[实时数据转换]
-        end
-        
-        subgraph UIModule["🎨 开发者驾驶舱"]
-            F --> Q[Web UI 渲染]
-            Q --> R[状态监控]
-            Q --> S[多模态测试]
-            Q --> T[集成指南]
-        end
-    end
+1. 登录 [Cloudflare Dashboard](https://dash.cloudflare.com/)，进入 **Workers 和 Pages**。
+2. 点击 **创建应用程序** -> **创建 Worker**，输入名称（例如 `my-puter-api`），点击**部署**。
+3. 部署后点击 **编辑代码**，将本项目中的 [`worker.js`](./worker.js) 内容完整复制并替换原有代码，点击 **部署 (Deploy)**。
+4. **配置环境变量**（重要）：
+   * 进入 Worker 的 **设置 (Settings)** -> **变量 (Variables)**。
+   * 添加变量 `PUTER_AUTH_TOKENS`：填入你刚才获取的 Puter Token（支持多个 Token，用逗号 `,` 分隔）。
+   * （可选）添加变量 `API_MASTER_KEY`：设置你的专属访问密码（例如 `sk-my-secret-key`）。
+5. 保存并重新部署，访问分配的 `https://<你的Worker>.workers.dev` 即可查看控制台！
 
-    %% 上游服务层
-    subgraph UpstreamLayer["🌐 上游服务层"]
-        U[Puter.com API]
-        V[多令牌轮询]
-    end
+---
 
-    %% 数据流向
-    A & B & C & D --> F
-    E --> Q
-    P --> U
-    U --> P
-    N --> V
-    V --> U
-    
-    %% 样式定义
-    classDef client fill:#e1f5fe,stroke:#01579b,stroke-width:2px
-    classDef gateway fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
-    classDef upstream fill:#e8f5e8,stroke:#1b5e20,stroke-width:2px
-    classDef module fill:#fff3e0,stroke:#e65100,stroke-width:2px
-    
-    class A,B,C,D,E client
-    class F,Q gateway
-    class U,V upstream
-    class G,H,J,K,L,M,N,O,P,R,S,T module
+### 方式二：使用 Wrangler 命令行部署
+
+克隆本项目并一键部署：
+
+```bash
+git clone https://github.com/dongsuo/puterjs-2api-cfwork.git
+cd puterjs-2api-cfwork
+npm install
+
+# 登录 Cloudflare
+npx wrangler login
+
+# 部署
+npm run deploy
 ```
 
-### 🎯 架构核心组件说明
-
-| 组件层级 | 核心模块 | 功能描述 | 技术实现 |
-|---------|----------|----------|----------|
-| **📱 客户端层** | 多种客户端 | 支持主流AI应用和开发工具 | OpenAI标准协议 |
-| **🚀 API网关层** | 认证模块 | 请求鉴权和安全性检查 | JWT令牌验证 |
-| | API处理模块 | 请求格式转换和路由分发 | RESTful API设计 |
-| | 流式处理引擎 | 实时数据流转换和传输 | TransformStream + SSE |
-| | 开发者驾驶舱 | 可视化监控和测试界面 | Web Components + Shadow DOM |
-| **🌐 上游服务层** | Puter.com API | 提供多模态AI能力 | 统一驱动接口 |
-| | 多令牌轮询 | 提高服务可用性和稳定性 | 负载均衡算法 |
+部署完成后，在 Cloudflare 控制台添加环境变量，或在 `wrangler.toml` 中配置即可。
 
 ---
 
-## 🎯 适用场景与人群
+## 📱 客户端配置示例
 
-无论你是谁，只要你对AI充满好奇，`puter-2api` 都能为你打开一扇门：
+### 1. NextChat (ChatGPT-Next-Web)
+* **接口地址 (Base URL)**: `https://<你的Worker>.workers.dev/v1`
+* **API Key**: 填入你设置的 `API_MASTER_KEY`（若未开启主密钥，可填任意值或直接填 Puter Token）。
+* **自定义模型**: `+gpt-4o-mini,+gpt-4o,+claude-3-5-sonnet,+gemini-2.0-flash,+deepseek-chat`
 
-| 👥 用户群体 | 🎯 核心需求 | 💡 解决方案 |
-|------------|-------------|-------------|
-| **AI应用开发者** | 低成本集成AI功能 | 免费API后端，降低开发成本 |
-| **学生与研究者** | 学术研究和实验 | 无限额度的AI实验平台 |
-| **AI爱好者与极客** | 探索最新AI技术 | 多模型测试游乐场 |
-| **内容创作者** | AI辅助内容生产 | 文案、图片、视频创作助手 |
-| **所有想省钱的人** | 减少AI服务开支 | 完全免费的替代方案 |
+### 2. LobeChat / Cherry Studio / Cursor
+* **API 地址**: `https://<你的Worker>.workers.dev/v1`
+* **API Key**: 填入 `API_MASTER_KEY` 或 Puter Token。
 
----
-
-## 🛠️ 技术内幕深度解析
-
-### 🏗️ 核心架构设计理念
-
-```mermaid
-graph LR
-    A[OpenAI格式请求] --> B[请求翻译器]
-    B --> C[Puter格式请求]
-    C --> D[上游API调用]
-    D --> E[Puter原始响应]
-    E --> F[响应翻译器]
-    F --> G[OpenAI格式响应]
-    
-    H[Stream数据流] --> I[TransformStream]
-    I --> J[实时格式转换]
-    J --> K[SSE数据推送]
-    
-    subgraph "🔧 核心技术栈"
-        L[Cloudflare Workers]
-        M[Fetch API]
-        N[TransformStream]
-        O[Web Components]
-        P[Shadow DOM]
-    end
-    
-    B --> L
-    F --> L
-    I --> N
-```
-
-### 🧩 关键技术实现细节
-
-#### 1. **单文件架构哲学 (Single-File Architecture)**
-```javascript
-// 所有功能集成在一个文件中
-// puter-2api.js - 后端API + 前端UI = 完整解决方案
-```
-
-#### 2. **实时流式传输引擎**
-```javascript
-// 使用 TransformStream 实现同声传译式数据流处理
-const transformStream = new TransformStream({
-    transform(chunk, controller) {
-        // 实时转换 Puter NDJSON → OpenAI SSE
-        const lines = chunk.toString().split('\n');
-        for (const line of lines) {
-            if (line.startsWith('data: ')) {
-                const data = JSON.parse(line.slice(6));
-                const openAIFormat = convertToOpenAIChatCompletion(data);
-                controller.enqueue(`data: ${JSON.stringify(openAIFormat)}\n\n`);
-            }
-        }
-    }
-});
-```
-
-#### 3. **多令牌智能轮询系统**
-```javascript
-// 自动轮询多个认证令牌，提高服务稳定性
-let currentTokenIndex = 0;
-function getNextAuthToken() {
-    const tokens = CONFIG.PUTER_AUTH_TOKENS;
-    currentTokenIndex = (currentTokenIndex + 1) % tokens.length;
-    return tokens[currentTokenIndex];
-}
-```
-
-#### 4. **Web Components 驱动的UI架构**
-```javascript
-// 模块化UI组件设计
-class LiveTerminal extends HTMLElement {
-    constructor() {
-        super();
-        this.attachShadow({ mode: 'open' });
-        this.shadowRoot.innerHTML = `
-            <style>/* 组件样式 */</style>
-            <div class="terminal">
-                <!-- 组件模板 -->
-            </div>
-        `;
-    }
-}
-customElements.define('live-terminal', LiveTerminal);
-```
-
----
-
-## 📊 项目现状与发展路线图
-
-### ✅ 已实现功能 (v1.0.3-cfw-pro)
-
-| 功能模块 | 状态 | 完成度 | 备注 |
-|----------|------|--------|------|
-| 核心代理框架 | ✅ 稳定 | 100% | 请求转换与转发 |
-| 流式聊天代理 | ✅ 完美 | 100% | 支持OpenAI流式聊天 |
-| 开发者驾驶舱UI | ✅ 完整 | 100% | 监控+测试+集成一体化 |
-| 多账号轮询 | ✅ 基础 | 90% | 基础轮询机制 |
-| 安全认证 | ✅ 可靠 | 100% | 主API密钥保护 |
-| 模型列表接口 | ✅ 动态 | 100% | 动态提供模型信息 |
-
-### ⚠️ 当前限制与待优化项
-
-| 问题类型 | 严重程度 | 影响范围 | 临时解决方案 |
-|----------|----------|----------|--------------|
-| 图像生成功能中断 | 🔴 高优先级 | 文生图功能 | 等待上游修复 |
-| 视频生成功能限制 | 🟡 中等 | 文生视频功能 | 明确提示用户 |
-| 配置热重载缺失 | 🟡 中等 | 运维便利性 | 需要重新部署 |
-| 无持久化日志 | 🟢 低优先级 | 运维分析 | 使用实时日志 |
-
-### 🗺️ 未来发展规划
-
-```mermaid
-gantt
-    title puter-2api 发展路线图
-    dateFormat  YYYY-MM-DD
-    section 🎯 核心功能
-    图像生成修复     :active, 2024-01-01, 30d
-    智能令牌管理     :2024-02-01, 45d
-    高级流式优化     :2024-03-15, 30d
-    
-    section 🚀 扩展能力  
-    使用情况统计     :2024-04-01, 45d
-    OpenAI特性扩展  :2024-05-15, 60d
-    动态配置面板     :2024-07-01, 30d
-    
-    section 🌟 生态建设
-    社区模型列表     :2024-08-01, 45d
-    性能监控系统     :2024-09-15, 60d
-    多语言SDK       :2024-11-01, 90d
-```
-
-### 🔧 技术升级路径
-
-1. **智能令牌管理 (Smart Token Management)**
-   - **技术方案**: Cloudflare KV 存储
-   - **实现目标**: 故障自动转移 + 负载均衡
-   - **预计效果**: 服务可用性提升至99.9%
-
-2. **使用情况统计与分析 (Usage Analytics)**
-   - **技术方案**: Cloudflare Analytics Engine
-   - **实现目标**: 可视化使用量监控
-   - **预计效果**: 精细化资源管理和优化
-
-3. **OpenAI特性全覆盖 (Feature Parity)**
-   - **技术方案**: 深度集成Puter驱动
-   - **实现目标**: 支持Function Calling、Embeddings等
-   - **预计效果**: 完全兼容OpenAI生态
-
----
-
-## 🎉 快速开始
-
-### 🚀 立即体验
-**[点击这里在线体验](https://puterjs.to2ai.workers.dev/)**
-
-### 📚 集成示例
-
+### 3. Python OpenAI SDK
 ```python
-# Python 集成示例
 import openai
 
 client = openai.OpenAI(
-    base_url="https://your-worker.you-subdomain.workers.dev/v1",
-    api_key="your-master-key"
+    base_url="https://<你的Worker>.workers.dev/v1",
+    api_key="your-master-key"  # 或直接填 Puter Token
 )
 
-response = client.chat.completions.create(
+# 1. 流式输出
+stream = client.chat.completions.create(
     model="gpt-4o-mini",
     messages=[{"role": "user", "content": "你好，请介绍一下你自己"}],
     stream=True
 )
+for chunk in stream:
+    print(chunk.choices[0].delta.content or "", end="")
 
-for chunk in response:
-    if chunk.choices[0].delta.content:
-        print(chunk.choices[0].delta.content, end="")
+# 2. 非流式调用 (v2.0 已完美支持)
+res = client.chat.completions.create(
+    model="gpt-4o-mini",
+    messages=[{"role": "user", "content": "1+1等于几？"}],
+    stream=False
+)
+print(res.choices[0].message.content)
 ```
 
-### 🔗 客户端支持
+### 4. cURL 命令行
+```bash
+# 流式请求
+curl https://<你的Worker>.workers.dev/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your-master-key" \
+  -d '{
+    "model": "gpt-4o-mini",
+    "messages": [{"role": "user", "content": "Hello!"}],
+    "stream": true
+  }'
 
-| 客户端 | 配置方式 | 状态 |
-|--------|----------|------|
-| LobeChat | 修改配置文件中API地址 | ✅ 完全支持 |
-| ChatGPT-Next-Web | 环境变量设置 | ✅ 完全支持 |
-| Open WebUI | 自定义API端点 | ✅ 完全支持 |
-| 任意OpenAI SDK | 修改base_url | ✅ 完全支持 |
-
----
-
-## 🤝 贡献与支持
-
-我们欢迎所有形式的贡献！无论是代码改进、文档完善、bug报告还是功能建议，都是对项目发展的宝贵支持。
-
-### 📋 贡献指南
-1. Fork 本仓库
-2. 创建功能分支 (`git checkout -b feature/AmazingFeature`)
-3. 提交更改 (`git commit -m 'Add some AmazingFeature'`)
-4. 推送到分支 (`git push origin feature/AmazingFeature`)
-5. 开启 Pull Request
-
-### 🐛 问题反馈
-如果你遇到任何问题，请通过 [GitHub Issues](https://github.com/lza6/puterjs-2api-cfwork/issues) 提交报告。
+# 携带自定义 Puter Token (即使 Worker 没有全局 Token 也能用)
+curl https://<你的Worker>.workers.dev/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "X-Puter-Auth-Token: eyJhbGciOi..." \
+  -d '{
+    "model": "gpt-4o-mini",
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'
+```
 
 ---
 
-## 📄 许可证
+## ⚙️ 环境变量说明
 
-本项目采用 Apache License 2.0 开源协议 - 查看 [LICENSE](LICENSE) 文件了解详情。
-
----
-
-## 💝 致谢
-
-感谢所有为这个项目做出贡献的开发者、测试者和使用者。特别感谢：
-
-- **Puter.com** 提供强大的AI基础设施
-- **Cloudflare** 提供优秀的边缘计算平台
-- **OpenAI** 制定行业标准的API规范
-- **所有开源社区贡献者** 让技术更加普惠
+| 变量名 | 必填 | 默认值 | 说明 |
+| :--- | :---: | :---: | :--- |
+| `PUTER_AUTH_TOKENS` | 推荐 | 无 | 服务端 Puter Token 凭证池。支持单个 Token，或逗号分隔的多个 Token，或 JSON 数组格式。 |
+| `API_MASTER_KEY` | 可选 | 空 | 访问网关的主密钥。配置后客户端必须带上该 Bearer Key 才能调用服务端的凭证池。 |
 
 ---
 
-**最后，愿这个项目能成为你探索AI宇宙的得力座驾。如果你喜欢它，请给一个 Star ⭐！如果你有任何想法或贡献，欢迎提交 Issue 或 Pull Request。让我们一起，让创造变得更简单、更纯粹、更有趣！**
+## 📄 开源许可证
 
----
-*✨ 探索无限可能，创造属于每个人的AI未来 ✨*
+本项目基于 [Apache License 2.0](./LICENSE) 协议开源。
+仅供个人开发、学习与测试使用，请遵循 Puter.com 服务条款。
