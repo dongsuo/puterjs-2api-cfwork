@@ -76,16 +76,26 @@ async function handleApi(request, env, ctx) {
   // 1. 获取运行时配置
   const runtimeConfig = getRuntimeConfig(env);
 
-  // 2. 鉴权与获取 Puter Token
+  // 2. /v1/models 接口不需要 Puter Auth Token，仅在开启主密钥时校验权限
+  if (url.pathname === "/v1/models") {
+    if (runtimeConfig.API_MASTER_KEY && runtimeConfig.API_MASTER_KEY !== "1") {
+      const authHeader = request.headers.get("Authorization") || "";
+      const bearerToken = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
+      if (bearerToken !== runtimeConfig.API_MASTER_KEY) {
+        return createErrorResponse("无效的 API Key。", 403, "invalid_api_key");
+      }
+    }
+    return handleModelsRequest(env);
+  }
+
+  // 3. 鉴权与获取 Puter Token (用于生成任务)
   const authResult = resolveAuthAndPuterToken(request, runtimeConfig);
   if (!authResult.success) {
     return createErrorResponse(authResult.error, authResult.status, authResult.code);
   }
 
-  // 3. 路由分发
+  // 4. 路由分发
   switch (url.pathname) {
-    case "/v1/models":
-      return handleModelsRequest(env);
     case "/v1/chat/completions":
       return handleChatCompletions(request, env, authResult.tokens, requestId);
     case "/v1/images/generations":
